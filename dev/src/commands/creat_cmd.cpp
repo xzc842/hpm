@@ -64,10 +64,12 @@ const char* kMitLicense =
 
 // 生成 driver manifest.json
 std::string makeDriverManifest(const std::string& name,
+                               const std::string& chip,
                                const std::string& version,
                                const std::string& license) {
     auto root = json::Value::object();
     root.set("name", json::Value(name));
+    root.set("chip", json::Value(chip));
     root.set("version", json::Value(version));
     root.set("description", json::Value(name + " driver"));
     root.set("license", json::Value(license));
@@ -100,6 +102,7 @@ std::string makeChipJson(const std::string& name,
     (void)version;
     auto root = json::Value::object();
     root.set("name", json::Value(name));
+    root.set("chip", json::Value(name));
     root.set("family", json::Value(""));
     root.set("package", json::Value(""));
     root.set("license", json::Value(license));
@@ -232,6 +235,9 @@ std::string makeLinkerScript(const std::string& name) {
 }
 
 std::string makeReadme(const std::string& name, const std::string& type) {
+    std::string header = (type == "chip")
+        ? (name + "-0.1.0")
+        : (name + "-*-0.1.0");
     return
 "# " + name + "\n"
 "\n"
@@ -240,7 +246,7 @@ std::string makeReadme(const std::string& name, const std::string& type) {
 "## 结构\n"
 "\n"
 "```\n"
-+ name + "-0.1.0/\n"
++ header + "/\n"
 "├── " + (type == "chip" ? HPM_FILE_CHIP : HPM_FILE_MANIFEST) + "\n"
 "├── LICENSE\n"
 "├── README.md\n"
@@ -257,6 +263,7 @@ void CreateCmd::setup(CLI::App& app) {
     app.add_option("--version", version_, "版本号（默认 0.1.0）");
     app.add_option("--license", license_, "许可证（默认 MIT）");
     app.add_option("--dir", dir_, "输出目录（默认当前目录）");
+    app.add_option("--chip", chip_, "目标芯片（默认 * 通用）");
 }
 
 int CreateCmd::run(DevContext& ctx) {
@@ -268,7 +275,10 @@ int CreateCmd::run(DevContext& ctx) {
     }
 
     fs::path base = dir_.empty() ? fs::current_path() : fs::path(dir_);
-    fs::path pkgDir = base / (name_ + "-" + version_);
+
+    // 芯片包 <chip>-<version>；驱动包 <driver>-<chip>-<version>
+    std::string chipSeg = (type_ == "chip") ? "" : (chip_ + "-");
+    fs::path pkgDir = base / (name_ + "-" + chipSeg + version_);
 
     if (fs::exists(pkgDir)) {
         err("目录已存在: " + pkgDir.string());
@@ -289,7 +299,7 @@ int CreateCmd::run(DevContext& ctx) {
         if (type_ == "chip") {
             content = makeChipJson(name_, version_, license_);
         } else {
-            content = makeDriverManifest(name_, version_, license_);
+            content = makeDriverManifest(name_, chip_, version_, license_);
         }
         fs::path path = pkgDir / (type_ == "chip" ? HPM_FILE_CHIP : HPM_FILE_MANIFEST);
         auto st = util::writeFileAtomic(path, content);
