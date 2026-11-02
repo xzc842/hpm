@@ -33,21 +33,28 @@ bool samePins(const std::map<ResourceKey, std::string>& a,
     return true;
 }
 
-} // namespace
+// existing_.driver 可能是 "rc522"、"rc522-ch552g"、"rc522-*"
+// 入参 driver 是 project.toml 里的裸名（"rc522"）
+bool driverMatches(const std::string& existingDriver,
+                   const std::string& bareName,
+                   const std::string& mcu) {
+    if (existingDriver == bareName) return true;
+    if (!mcu.empty()) {
+        if (existingDriver == bareName + "-" + mcu) return true;
+        if (existingDriver == bareName + "-*") return true;
+    }
+    return false;
+}
 
-// ─────────────────────────────────────────────
-// 公共入口
-// ─────────────────────────────────────────────
+} // namespace
 
 Result<DriverState> Resolver::resolve() {
     DriverState out;
 
     for (const auto& dev : project_.devices) {
-        // 阶段 1：展开
         auto node = expandUserDevice(dev);
         if (!node) return node.error();
 
-        // 阶段 2：转成 DriverState
         auto st = buildState(**node, out);
         if (!st.ok()) return st.error();
     }
@@ -55,32 +62,27 @@ Result<DriverState> Resolver::resolve() {
     return out;
 }
 
-// ─────────────────────────────────────────────
-// 阶段 1：展开成 ResolvedNode 树
-// ─────────────────────────────────────────────
-
 Result<std::unique_ptr<ResolvedNode>>
 Resolver::expandUserDevice(const Device& dev) {
-    const DriverManifest* dm = lib_.find(dev.driver);
+    const DriverManifest* dm = lib_.find(dev.driver, project_.mcu);
     if (!dm) {
         return Error(ErrorCode::NotFound,
                      "找不到驱动: " + dev.driver + "（设备 " + dev.name + "）");
     }
 
     auto node = std::make_unique<ResolvedNode>();
-    node->driver = dev.driver;
+    node->driver = dm->name;                       // 带 chip
     node->version = lockVersion(dev.driver);
     node->instanceName = dev.name;
     node->isTopLevel = true;
     node->config = dev.config;
 
-    std::vector<std::string> visited = {dev.driver};
-    std::set<std::string>    consumed;   // 每个用户设备独立
+    std::vector<std::string> visited = {dm->name};
+    std::set<std::string>    consumed;
 
     auto st = expandRequirements(*dm, dev, dev.name, visited, consumed, *node);
     if (!st.ok()) return st.error();
 
-    // 顶层设备未被消费的字段直接作为引脚保留
     for (const auto& [k, v] : dev.bindings) {
         if (consumed.count(k)) continue;
         node->pins[k] = v;
@@ -96,16 +98,15 @@ Status Resolver::expandRequirements(const DriverManifest& dm,
                                     std::set<std::string>& consumed,
                                     ResolvedNode& node) {
     for (const auto& req : dm.requirements) {
-        const DriverManifest* childDm = lib_.find(req.type);
+        const DriverManifest* childDm = lib_.find(req.type, project_.mcu);
 
         if (childDm) {
-            // ── 子驱动：创建子节点 ──
-            if (std::find(visited.begin(), visited.end(), req.type) != visited.end()) {
+            if (std::find(visited.begin(), visited.end(), childDm->name) != visited.end()) {
                 return Error(ErrorCode::CyclicDependency,
-                             "驱动循环依赖: " + topName + " → " + req.type);
+                             "驱动循环依赖: " + topName + " → " + childDm->name);
             }
 
-            visited.push_back(req.type);
+            visited.push_back(childDm->name);
             auto child = expandChild(*childDm, topDevice, topName,
                                      req.key, visited, consumed);
             visited.pop_back();
@@ -114,7 +115,6 @@ Status Resolver::expandRequirements(const DriverManifest& dm,
             node.children[req.key] = std::move(*child);
 
         } else {
-            // ── 直接引脚 ──
             auto it = topDevice.bindings.find(req.key);
             if (it == topDevice.bindings.end()) {
                 if (req.optional) continue;
@@ -142,28 +142,25 @@ Resolver::expandChild(const DriverManifest& childDm,
                       std::vector<std::string>& visited,
                       std::set<std::string>& consumed) {
     auto child = std::make_unique<ResolvedNode>();
-    child->driver = childDm.name;
+    child->driver = childDm.name;                  // 带 chip
     child->version = lockVersion(childDm.name);
     child->isTopLevel = false;
 
-    // 子驱动的 requires 从 topDevice 里按 key 取
     for (const auto& subReq : childDm.requirements) {
-        const DriverManifest* subChildDm = lib_.find(subReq.type);
+        const DriverManifest* subChildDm = lib_.find(subReq.type, project_.mcu);
 
         if (subChildDm) {
-            // 子驱动的子驱动：递归
-            if (std::find(visited.begin(), visited.end(), subReq.type) != visited.end()) {
+            if (std::find(visited.begin(), visited.end(), subChildDm->name) != visited.end()) {
                 return Error(ErrorCode::CyclicDependency,
-                             "驱动循环依赖: " + topName + " → " + subReq.type);
+                             "驱动循环依赖: " + topName + " → " + subChildDm->name);
             }
-            visited.push_back(subReq.type);
+            visited.push_back(subChildDm->name);
             auto sub = expandChild(*subChildDm, topDevice, topName,
                                    subReq.key, visited, consumed);
             visited.pop_back();
             if (!sub) return sub.error();
             child->children[subReq.key] = std::move(*sub);
         } else {
-            // 引脚
             auto it = topDevice.bindings.find(subReq.key);
             if (it == topDevice.bindings.end()) {
                 if (subReq.optional) continue;
@@ -182,15 +179,11 @@ Resolver::expandChild(const DriverManifest& childDm,
         }
     }
 
-    // ── 复用或新建 ──
-
-    // 1. 本次解析中已创建的
     if (const std::string* name = findIntermediateName(childDm.name, child->pins)) {
         child->instanceName = *name;
         return child;
     }
 
-    // 2. existing_（driver.json）里已有的
     const IntermediateDevice* reuse =
         findExistingIntermediate(childDm.name, child->pins);
     if (reuse) {
@@ -199,39 +192,30 @@ Resolver::expandChild(const DriverManifest& childDm,
         return child;
     }
 
-    // 3. 全新生成
     child->instanceName = generateIntermediateId(childDm.name);
     rememberIntermediate(childDm.name, child->pins, child->instanceName);
 
     return child;
 }
 
-// ─────────────────────────────────────────────
-// 阶段 2：把树转成 DriverState
-// ─────────────────────────────────────────────
-
 Status Resolver::buildState(const ResolvedNode& root, DriverState& out) {
-    // 根节点 = 用户设备
     Device userDev;
     userDev.name = root.instanceName;
-    userDev.driver = root.driver;
+    userDev.driver = root.driver;                  // 带 chip
     userDev.version = root.version;
     userDev.userDeclared = true;
     userDev.config = root.config;
 
-    // 直接引脚
     for (const auto& [k, v] : root.pins) {
         userDev.bindings[k] = v;
     }
 
-    // 子节点的引用（bus -> 子节点名）
     for (const auto& [key, childPtr] : root.children) {
         userDev.bindings[key] = childPtr->instanceName;
     }
 
     out.userDevices.push_back(std::move(userDev));
 
-    // 递归写中间设备
     for (const auto& [key, childPtr] : root.children) {
         auto st = buildIntermediate(*childPtr, out);
         if (!st.ok()) return st.error();
@@ -245,21 +229,18 @@ Status Resolver::buildIntermediate(const ResolvedNode& node,
     IntermediateDevice idev;
     idev.id = node.instanceName;
     idev.name = node.instanceName;
-    idev.driver = node.driver;
+    idev.driver = node.driver;                     // 带 chip
     idev.version = node.version;
     idev.config = node.config;
 
-    // 引脚
     for (const auto& [k, v] : node.pins) {
         idev.bindings[k] = v;
     }
 
-    // 子引用
     for (const auto& [key, childPtr] : node.children) {
         idev.bindings[key] = childPtr->instanceName;
     }
 
-    // 去重：如果已有同名中间设备，跳过
     bool exists = false;
     for (const auto& e : out.intermediateDevices) {
         if (e.name == idev.name) { exists = true; break; }
@@ -268,7 +249,6 @@ Status Resolver::buildIntermediate(const ResolvedNode& node,
         out.intermediateDevices.push_back(std::move(idev));
     }
 
-    // 递归子设备
     for (const auto& [key, childPtr] : node.children) {
         auto st = buildIntermediate(*childPtr, out);
         if (!st.ok()) return st.error();
@@ -276,10 +256,6 @@ Status Resolver::buildIntermediate(const ResolvedNode& node,
 
     return {};
 }
-
-// ─────────────────────────────────────────────
-// 工具
-// ─────────────────────────────────────────────
 
 const std::string* Resolver::findIntermediateName(
     const std::string& driver,
@@ -310,13 +286,13 @@ const IntermediateDevice* Resolver::findExistingIntermediate(
 Version Resolver::lockVersion(const std::string& driver) const {
     if (existing_) {
         for (const auto& d : existing_->userDevices) {
-            if (d.driver == driver) return d.version;
+            if (driverMatches(d.driver, driver, project_.mcu)) return d.version;
         }
         for (const auto& d : existing_->intermediateDevices) {
-            if (d.driver == driver) return d.version;
+            if (driverMatches(d.driver, driver, project_.mcu)) return d.version;
         }
     }
-    if (auto* dm = lib_.find(driver)) {
+    if (auto* dm = lib_.find(driver, project_.mcu)) {
         return dm->version;
     }
     return Version{};

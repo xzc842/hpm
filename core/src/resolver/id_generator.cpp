@@ -15,6 +15,7 @@
 // core/src/resolver/id_generator.cpp
 #include <hpm/resolver/id_generator.h>
 
+#include <cctype>
 #include <cstdint>
 #include <iomanip>
 #include <random>
@@ -27,8 +28,19 @@ std::string generateIntermediateId(const std::string& prefix) {
     static std::mt19937 gen(rd());
     std::uniform_int_distribution<uint32_t> dist(0, 0xFFFF);
 
+    // 把 prefix 里的非字母数字（如 '-'、'/'）替换成 '_'，保证是合法 C 标识符
+    std::string safe;
+    safe.reserve(prefix.size());
+    for (char c : prefix) {
+        if (std::isalnum(static_cast<unsigned char>(c)) || c == '_') {
+            safe += c;
+        } else {
+            safe += '_';
+        }
+    }
+
     std::ostringstream oss;
-    oss << "__" << prefix << "_"
+    oss << "__" << safe << "_"
         << std::hex << std::setw(4) << std::setfill('0') << dist(gen);
     return oss.str();
 }

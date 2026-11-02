@@ -36,17 +36,35 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// 从包目录加载芯片驱动
+// 从包目录加载芯片驱动（芯片包目录名 <chip>-<version>）
 Result<Chip> loadChipFromCache(const fs::path& packagesDir,
                                 const std::string& mcu) {
     if (!fs::exists(packagesDir)) {
         return Error(ErrorCode::NotFound,
                      "包目录不存在: " + packagesDir.string());
     }
-    for (const auto& entry : fs::directory_iterator(packagesDir)) {
+
+    fs::path dir = packagesDir;
+    std::string name = mcu;
+
+    auto slash = mcu.find('/');
+    if (slash != std::string::npos) {
+        auto domain = mcu.substr(0, slash);
+        name = mcu.substr(slash + 1);
+        dir = dir / domain;
+    }
+
+    if (!fs::exists(dir)) {
+        return Error(ErrorCode::NotFound,
+                     "域目录不存在: " + dir.string());
+    }
+
+    std::string prefix = name + "-";
+    for (const auto& entry : fs::directory_iterator(dir)) {
         if (!entry.is_directory()) continue;
-        auto name = entry.path().filename().string();
-        if (name.rfind(mcu + "-", 0) != 0) continue;
+        auto n = entry.path().filename().string();
+        if (n.rfind(prefix, 0) != 0) continue;
+
         auto chipJson = entry.path() / HPM_FILE_CHIP;
         if (fs::exists(chipJson)) {
             return manifest::loadChipFile(chipJson);
@@ -56,20 +74,52 @@ Result<Chip> loadChipFromCache(const fs::path& packagesDir,
                  "未找到芯片驱动: " + mcu);
 }
 
-// 从包目录加载所有驱动清单
+// 从包目录加载所有驱动清单（key = <driver>-<chip>）
 DriverLibrary loadAllDrivers(const fs::path& packagesDir) {
     DriverLibrary lib;
     if (!fs::exists(packagesDir)) return lib;
 
+    auto scan = [&](const fs::path& dir, const std::string& domain) {
+        if (!fs::exists(dir)) return;
+        for (const auto& entry : fs::directory_iterator(dir)) {
+            if (!entry.is_directory()) continue;
+            auto mf = entry.path() / HPM_FILE_MANIFEST;
+            if (!fs::exists(mf)) continue;
+
+            // 目录名 <name>-<chip>-<version>
+            std::string chip = "*";
+            auto dirName = entry.path().filename().string();
+            auto p2 = dirName.rfind('-');
+            if (p2 != std::string::npos) {
+                auto p1 = dirName.rfind('-', p2 - 1);
+                if (p1 != std::string::npos) {
+                    chip = dirName.substr(p1 + 1, p2 - p1 - 1);
+                }
+            }
+
+            auto dm = manifest::loadDriverManifestFile(mf);
+            if (dm.ok()) {
+                std::string baseName = dm->name;
+                if (!domain.empty()) {
+                    baseName = domain + "/" + baseName;
+                }
+                dm->name = baseName + "-" + chip;
+                lib.add(std::move(*dm));
+            }
+        }
+    };
+
+    scan(packagesDir, "");
+
     for (const auto& entry : fs::directory_iterator(packagesDir)) {
         if (!entry.is_directory()) continue;
-        auto mf = entry.path() / HPM_FILE_MANIFEST;
-        if (!fs::exists(mf)) continue;
-        auto dm = manifest::loadDriverManifestFile(mf);
-        if (dm) {
-            lib.add(std::move(*dm));
+        if (fs::exists(entry.path() / HPM_FILE_MANIFEST) ||
+            fs::exists(entry.path() / HPM_FILE_CHIP)) {
+            continue;
         }
+        scan(entry.path(), entry.path().filename().string());
     }
+
     return lib;
 }
 

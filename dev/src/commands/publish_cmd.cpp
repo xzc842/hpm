@@ -31,6 +31,8 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <cstdio>
+#include <array>
 
 namespace hpm::cli {
 
@@ -73,12 +75,29 @@ std::string detectAlgorithm(const std::string& keyPath) {
     }
 
     if (content.find("BEGIN PRIVATE KEY") != std::string::npos) {
-        auto tmp = fs::temp_directory_path() / "hpm_keytype.txt";
-        std::string cmd = "openssl pkey -in \"" + keyPath +
-                          "\" -noout -text > \"" + tmp.string() + "\" 2>&1";
-        std::system(cmd.c_str());
-        std::string out = readAll(tmp);
-        fs::remove(tmp);
+        std::string quoted;
+        quoted.reserve(keyPath.size() + 2);
+        quoted += '\'';
+        for (char c : keyPath) {
+            if (c == '\'') {
+                quoted += "'\\''";
+            } else {
+                quoted += c;
+            }
+        }
+        quoted += '\'';
+
+        std::string cmd = "openssl pkey -in " + quoted + " -noout -text 2>&1";
+
+        std::string out;
+        if (FILE* pipe = popen(cmd.c_str(), "r")) {
+            std::array<char, 4096> buf;
+            size_t n;
+            while ((n = fread(buf.data(), 1, buf.size(), pipe)) > 0) {
+                out.append(buf.data(), n);
+            }
+            pclose(pipe);
+        }
 
         if (out.find("ED25519") != std::string::npos) return "ed25519";
         if (out.find("ED448") != std::string::npos) return "ed448";
@@ -92,7 +111,6 @@ std::string detectAlgorithm(const std::string& keyPath) {
     return "";
 }
 
-// 在指定目录下运行 git 命令（用 -C，避免依赖 runProcess 的 cwd 支持）
 auto runGit(const fs::path& cwd, const std::vector<std::string>& args,
             bool verbose = false) {
     std::vector<std::string> full;
@@ -103,7 +121,6 @@ auto runGit(const fs::path& cwd, const std::vector<std::string>& args,
     return hpm::util::runProcess("git", full, verbose);
 }
 
-// 从 manifest / chip 中读取 license，读不到返回默认值
 std::string readLicense(const fs::path& manifestPath,
                         const fs::path& chipPath,
                         const std::string& fallback = "MIT") {
@@ -113,7 +130,7 @@ std::string readLicense(const fs::path& manifestPath,
     if (!j) return fallback;
     auto lic = j->get("license");
     if (lic) {
-        auto s = lic->asString();     // hpm::Result<std::string>
+        auto s = lic->asString();
         if (s.ok()) {
             std::string v = s.value();
             if (!v.empty()) return v;
@@ -145,6 +162,8 @@ int PublishCmd::run(DevContext& ctx) {
     // 1. 读 manifest / chip
     std::string name;
     std::string version;
+    std::string chip = "*";
+    std::string pkgKey;   // === 提到外层，供 commit / push / 同步使用
 
     auto manifestPath = pkgDir / "manifest.json";
     auto chipPath = pkgDir / "chip.json";
@@ -158,13 +177,24 @@ int PublishCmd::run(DevContext& ctx) {
         }
         name = dm->name;
         version = dm->version.toString();
+
+        auto mj = json::parseFile(manifestPath);
+        if (mj) {
+            auto c = mj->get("chip");
+            if (c && c->isString()) {
+                auto s = c->asString();
+                if (s.ok() && !s.value().empty()) chip = s.value();
+            }
+        }
     } else if (fs::exists(chipPath)) {
-        auto chip = hpm::manifest::loadChipFile(chipPath);
-        if (!chip) {
-            err("chip.json: " + chip.error().message());
+        auto chipM = hpm::manifest::loadChipFile(chipPath);
+        if (!chipM) {
+            err("chip.json: " + chipM.error().message());
             return 1;
         }
-        name = chip->name;
+        name = chipM->name;
+        chip = name;
+
         auto dirName = pkgDir.filename().string();
         auto dash = dirName.rfind('-');
         if (dash == std::string::npos) {
@@ -177,23 +207,27 @@ int PublishCmd::run(DevContext& ctx) {
         return 1;
     }
 
-    ok("包: " + name + "@" + version);
+    pkgKey = isChip ? name : (name + "-" + chip);   // === 外层赋值
 
-    // 2. 检查包目录名
-    auto expectedDirName = name + "-" + version;
+    ok("包: " + pkgKey + "@" + version);
+
+    // 2. 目录名：芯片 <chip>-<version>；驱动 <driver>-<chip>-<version>
+    auto expectedDirName = isChip
+        ? (name + "-" + version)
+        : (name + "-" + chip + "-" + version);
     if (pkgDir.filename().string() != expectedDirName) {
         err("包目录名必须是 " + expectedDirName +
             "，实际是 " + pkgDir.filename().string());
         return 1;
     }
 
-    // 3. 检查私钥
+    // 3. 私钥
     if (!fs::exists(keyPath_)) {
         err("私钥不存在: " + keyPath_);
         return 1;
     }
 
-    // 4. 输出根目录 = publish/
+    // 4. 输出根
     fs::path out = outDir_.empty() ? fs::path("publish") : fs::path(outDir_);
     std::error_code ec;
     fs::create_directories(out, ec);
@@ -202,9 +236,12 @@ int PublishCmd::run(DevContext& ctx) {
         return 1;
     }
 
-    // 5. 打包 tar.gz（先放 publish/ 根，稍后拷到 publish/<dev>/）
-    auto tarName = name + "-" + version + ".tar.gz";
-    auto sigName = name + "-" + version + ".tar.gz.sig";
+    // 5. tar 名
+    auto pkgBase = isChip
+        ? (name + "-" + version)
+        : (name + "-" + chip + "-" + version);
+    auto tarName = pkgBase + ".tar.gz";
+    auto sigName = pkgBase + ".tar.gz.sig";
     auto tarPath = out / tarName;
     auto sigPath = out / sigName;
 
@@ -219,7 +256,7 @@ int PublishCmd::run(DevContext& ctx) {
     }
     ok("打包: " + tarPath.string());
 
-    // 6. 检测算法
+    // 6. 算法
     std::string alg = algorithm_;
     if (alg == "auto") {
         alg = detectAlgorithm(keyPath_);
@@ -256,13 +293,14 @@ int PublishCmd::run(DevContext& ctx) {
     std::cout << "\n";
     std::cout << "包信息：\n";
     std::cout << "  name:      " << name << "\n";
+    std::cout << "  chip:      " << chip << "\n";
     std::cout << "  version:   " << version << "\n";
     std::cout << "  algorithm: " << alg << "\n";
     std::cout << "  license:   " << license << "\n";
     std::cout << "  sha256:    " << sha << "\n";
     std::cout << "  size:      " << size << "\n\n";
 
-    // 9. 读 dev.json
+    // 9. dev.json
     auto cfg = loadDevConfig();
     if (!cfg) {
         info("未登录，跳过索引更新");
@@ -273,8 +311,8 @@ int PublishCmd::run(DevContext& ctx) {
         return 0;
     }
 
-    // 10. publish/ 必须是 git 仓库，否则只打包签名
-    fs::path repoRoot = out;                 // publish 即仓库根
+    // 10. publish/ 必须是 git 仓库
+    fs::path repoRoot = out;
     fs::path gitDir = repoRoot / ".git";
     if (!fs::exists(gitDir)) {
         err("publish 目录不是 git 仓库: " + repoRoot.string());
@@ -285,7 +323,7 @@ int PublishCmd::run(DevContext& ctx) {
         return 0;
     }
 
-    // 11. git pull（在 publish/ 里）
+    // 11. git pull
     info("拉取远程仓库...");
     st = runGit(repoRoot, {"pull", "origin", "main"}, false);
     if (!st.ok()) {
@@ -294,7 +332,7 @@ int PublishCmd::run(DevContext& ctx) {
         return 1;
     }
 
-    // 12. 拷产物到 publish/<developer>/
+    // 12. 拷产物
     fs::path devDir = repoRoot / cfg->developer;
     fs::create_directories(devDir, ec);
     if (ec) {
@@ -309,7 +347,7 @@ int PublishCmd::run(DevContext& ctx) {
     if (ec) { err("拷贝 sig 失败: " + ec.message()); return 1; }
     ok("已放置产物: " + devDir.string());
 
-    // 13. 更新 publish/index.json
+    // 13. index.json
     info("更新 index.json...");
     fs::path indexPath = repoRoot / "index.json";
     {
@@ -326,7 +364,6 @@ int PublishCmd::run(DevContext& ctx) {
             index.set("packages", json::Value::object());
         }
 
-        // 开发者
         auto devs = index.get("developers");
         if (!devs || !devs->isObject()) {
             index.set("developers", json::Value::object());
@@ -341,15 +378,16 @@ int PublishCmd::run(DevContext& ctx) {
             devs->set(cfg->developer, devObj);
         }
 
-        // 包
+        // pkgKey 用外层定义好的
+
         auto packages = index.get("packages");
         if (!packages || !packages->isObject()) {
             index.set("packages", json::Value::object());
             packages = index.get("packages");
         }
         json::Value pkgInfo;
-        if (packages->has(name)) {
-            pkgInfo = *packages->get(name);
+        if (packages->has(pkgKey)) {
+            pkgInfo = *packages->get(pkgKey);
         } else {
             pkgInfo = json::Value::object();
             pkgInfo.set("versions", json::Value::object());
@@ -360,31 +398,56 @@ int PublishCmd::run(DevContext& ctx) {
             versions = pkgInfo.get("versions");
         }
 
-        // requires（JSON key 用 "requires"）
-        json::Value requires_ = json::Value::object();
-        if (fs::exists(manifestPath)) {
-            auto mj = json::parseFile(manifestPath);
-            if (mj && mj->has("requires")) {
-                auto reqs = mj->get("requires");
-                if (reqs) requires_ = *reqs;
+        json::Value requires_    = json::Value::object();
+        json::Value description_ = json::Value("");
+        json::Value config_      = json::Value::object();
+        json::Value provides_    = json::Value::object();
+        json::Value pins_        = json::Value::object();
+        {
+            fs::path mp = fs::exists(manifestPath) ? manifestPath : chipPath;
+            if (fs::exists(mp)) {
+                auto mj = json::parseFile(mp);
+                if (mj) {
+                    auto reqs = mj->get("requires");
+                    if (reqs) requires_ = *reqs;
+
+                    auto desc = mj->get("description");
+                    if (desc && desc->isString()) description_ = *desc;
+
+                    auto cfgv = mj->get("config");
+                    if (cfgv && cfgv->isObject()) config_ = *cfgv;
+
+                    auto prov = mj->get("provides");
+                    if (prov && prov->isObject()) provides_ = *prov;
+
+                    auto pins = mj->get("pins");
+                    if (pins && pins->isObject()) pins_ = *pins;
+                }
             }
         }
 
         auto verObj = json::Value::object();
         verObj.set("kind", json::Value(isChip ? "chip" : "driver"));
+        verObj.set("chip", json::Value(chip));
         verObj.set("developer", json::Value(cfg->developer));
         verObj.set("url", json::Value("{baseurl}/" + cfg->developer + "/" +
-                                      name + "-" + version + ".tar.gz"));
+                                      pkgBase + ".tar.gz"));
         verObj.set("sig_url", json::Value("{baseurl}/" + cfg->developer + "/" +
-                                          name + "-" + version + ".tar.gz.sig"));
+                                          pkgBase + ".tar.gz.sig"));
         verObj.set("sha256", json::Value(sha));
         verObj.set("size", json::Value(static_cast<int64_t>(size)));
         verObj.set("license", json::Value(license));
-        verObj.set("requires", requires_);      // 统一为 "requires"
+        verObj.set("description", description_);
+        verObj.set("config", config_);
+        verObj.set("provides", provides_);
+        verObj.set("requires", requires_);
+        if (isChip) {
+            verObj.set("pins", pins_);
+        }
 
         versions->set(version, verObj);
         pkgInfo.set("versions", *versions);
-        packages->set(name, pkgInfo);
+        packages->set(pkgKey, pkgInfo);
         index.set("packages", *packages);
 
         auto writeSt = json::writeFile(index, indexPath);
@@ -415,7 +478,7 @@ int PublishCmd::run(DevContext& ctx) {
     }
     ok("已签名 " + indexSigPath.string());
 
-    // 15. 在 publish/ 里 git add / commit
+    // 15. git add / commit
     info("提交...");
     st = runGit(repoRoot,
         {"add",
@@ -428,14 +491,14 @@ int PublishCmd::run(DevContext& ctx) {
         return 1;
     }
 
-    st = runGit(repoRoot, {"commit", "-m", "Update " + name + "@" + version}, false);
+    st = runGit(repoRoot, {"commit", "-m", "Update " + pkgKey + "@" + version}, false);
     if (!st.ok()) {
         info("没有变更需要提交，跳过");
     } else {
-        ok("已提交 " + name + "@" + version);
+        ok("已提交 " + pkgKey + "@" + version);
     }
 
-    // 16. 有远程才 push
+    // 16. push
     auto originUrl = runGit(repoRoot, {"remote", "get-url", "origin"}, false);
     bool hasRemote = originUrl.ok();
 
@@ -447,22 +510,25 @@ int PublishCmd::run(DevContext& ctx) {
             info("请手动运行: git -C publish push origin main");
             return 1;
         }
-        ok("已推送 " + name + "@" + version);
+        ok("已推送 " + pkgKey + "@" + version);
 
-        // 17. 同步到 HPM 开发者中心账户
+        // 17. 同步到开发者中心
         info("同步到开发者中心...");
         {
             std::string requiresJsonStr = "{}";
-            if (fs::exists(manifestPath)) {
-                auto mj = json::parseFile(manifestPath);
-                if (mj && mj->has("requires")) {
-                    auto reqs = mj->get("requires");
-                    if (reqs) requiresJsonStr = json::dump(*reqs, -1);
+            {
+                fs::path mp = fs::exists(manifestPath) ? manifestPath : chipPath;
+                if (fs::exists(mp)) {
+                    auto mj = json::parseFile(mp);
+                    if (mj && mj->has("requires")) {
+                        auto reqs = mj->get("requires");
+                        if (reqs) requiresJsonStr = json::dump(*reqs, -1);
+                    }
                 }
             }
 
             auto payload = json::Value::object();
-            payload.set("name", json::Value(name));
+            payload.set("name", json::Value(pkgKey));
             payload.set("kind", json::Value(isChip ? "chip" : "driver"));
             payload.set("requiresJson", json::Value(requiresJsonStr));
             payload.set("version", json::Value(version));

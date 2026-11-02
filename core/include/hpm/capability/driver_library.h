@@ -26,16 +26,40 @@
 
 namespace hpm {
 
-// 驱动清单集合：按驱动名索引
+// 驱动清单集合：按 "<driver>-<chip>" 索引
 class DriverLibrary {
 public:
     void add(DriverManifest manifest) {
         manifests_[manifest.name] = std::move(manifest);
     }
 
+    // 精确匹配
     const DriverManifest* find(const DriverName& name) const {
         auto it = manifests_.find(name);
         return it == manifests_.end() ? nullptr : &it->second;
+    }
+
+    // 带芯片自动补全：
+    //   1. 精确 name
+    //   2. <name>-<mcu>
+    //   3. <name>-*
+    //   4. 域包 domain/<base> 同样回退
+    const DriverManifest* find(const DriverName& name,
+                               const std::string& mcu) const {
+        if (const auto* d = find(name)) return d;
+        if (mcu.empty()) return nullptr;
+
+        if (const auto* d = find(name + "-" + mcu)) return d;
+        if (const auto* d = find(name + "-*")) return d;
+
+        auto slash = name.find('/');
+        if (slash != std::string::npos) {
+            auto domain = name.substr(0, slash);
+            auto base = name.substr(slash + 1);
+            if (const auto* d = find(domain + "/" + base + "-" + mcu)) return d;
+            if (const auto* d = find(domain + "/" + base + "-*")) return d;
+        }
+        return nullptr;
     }
 
     bool has(const DriverName& name) const {

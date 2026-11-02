@@ -65,10 +65,13 @@ Result<Chip> loadChipFromCache(const fs::path& packagesDir,
                      "域目录不存在: " + dir.string());
     }
 
+    // 芯片包目录名：<chip>-<version>（两段）
+    std::string prefix = name + "-";
     for (const auto& entry : fs::directory_iterator(dir)) {
         if (!entry.is_directory()) continue;
         auto n = entry.path().filename().string();
-        if (n.rfind(name + "-", 0) != 0) continue;
+        if (n.rfind(prefix, 0) != 0) continue;
+
         auto chipJson = entry.path() / HPM_FILE_CHIP;
         if (fs::exists(chipJson)) {
             return manifest::loadChipFile(chipJson);
@@ -82,37 +85,44 @@ DriverLibrary loadAllDrivers(const fs::path& packagesDir) {
     DriverLibrary lib;
     if (!fs::exists(packagesDir)) return lib;
 
-    // 扫描一个目录，domain 是域前缀（空表示主仓库）
     auto scan = [&](const fs::path& dir, const std::string& domain) {
         if (!fs::exists(dir)) return;
         for (const auto& entry : fs::directory_iterator(dir)) {
             if (!entry.is_directory()) continue;
             auto mf = entry.path() / HPM_FILE_MANIFEST;
             if (!fs::exists(mf)) continue;
+
+            // 目录名 <name>-<chip>-<version>
+            std::string chip = "*";
+            auto dirName = entry.path().filename().string();
+            auto p2 = dirName.rfind('-');
+            if (p2 != std::string::npos) {
+                auto p1 = dirName.rfind('-', p2 - 1);
+                if (p1 != std::string::npos) {
+                    chip = dirName.substr(p1 + 1, p2 - p1 - 1);
+                }
+            }
+
             auto dm = manifest::loadDriverManifestFile(mf);
             if (dm.ok()) {
+                std::string baseName = dm->name;
                 if (!domain.empty()) {
-                    dm->name = domain + "/" + dm->name;
+                    baseName = domain + "/" + baseName;
                 }
+                dm->name = baseName + "-" + chip;
                 lib.add(std::move(*dm));
             }
         }
     };
 
-    // 1. 扫主仓库包（<packages>/<name>-<version>/manifest.json）
     scan(packagesDir, "");
 
-    // 2. 扫域目录（<packages>/<domain>/<name>-<version>/manifest.json）
     for (const auto& entry : fs::directory_iterator(packagesDir)) {
         if (!entry.is_directory()) continue;
-
-        // 如果 entry 里直接有 manifest.json 或 chip.json，是主仓库包，跳过
         if (fs::exists(entry.path() / HPM_FILE_MANIFEST) ||
             fs::exists(entry.path() / HPM_FILE_CHIP)) {
             continue;
         }
-
-        // 否则是域目录
         scan(entry.path(), entry.path().filename().string());
     }
 
@@ -120,7 +130,7 @@ DriverLibrary loadAllDrivers(const fs::path& packagesDir) {
 }
 
 struct NeededPackage {
-    std::string fullName;   // "name" 或 "domain/name"
+    std::string fullName;
     std::string version;
 };
 
@@ -134,13 +144,20 @@ Result<std::vector<NeededPackage>> expandDependencies(
     std::set<std::string> visited;
     std::queue<std::string> queue;
 
+    // 芯片包：<mcu>（一段 key）
     queue.push(mcu);
 
+    // 用户设备：<driver>-<mcu>，回退 <driver>-*
     for (const auto& dev : proj.devices) {
+        std::string k1 = dev.driver + "-" + mcu;
+        std::string k2 = dev.driver + "-*";
+        std::string key = mainIdx.packages.count(k1) ? k1
+                        : mainIdx.packages.count(k2) ? k2
+                        : k1;
         if (dev.version.toString() != "0.0.0") {
-            queue.push(dev.driver + "@" + dev.version.toString());
+            queue.push(key + "@" + dev.version.toString());
         } else {
-            queue.push(dev.driver);
+            queue.push(key);
         }
     }
 
@@ -151,7 +168,6 @@ Result<std::vector<NeededPackage>> expandDependencies(
         if (visited.count(item)) continue;
         visited.insert(item);
 
-        // 解析 domain/name@version
         std::string fullName = item;
         std::string ver;
         auto at = item.find('@');
@@ -160,46 +176,63 @@ Result<std::vector<NeededPackage>> expandDependencies(
             ver = item.substr(at + 1);
         }
 
-        std::string domain, name;
-        registry::RegistryClient::splitName(fullName, domain, name);
+        std::string domain, nameWithChip;
+        registry::RegistryClient::splitName(fullName, domain, nameWithChip);
 
-        // 选索引
         const registry::Index* useIdx = &mainIdx;
         if (!domain.empty()) {
             auto di = client.fetchDomainIndex(domain);
-            if (!di) {
-                return di.error();
-            }
+            if (!di) return di.error();
             useIdx = *di;
         }
 
+        // 查找：精确 -> <base>-* -> <base>-<mcu>
+        std::string resolvedKey = nameWithChip;
+        if (!useIdx->packages.count(resolvedKey)) {
+            auto dash = nameWithChip.rfind('-');
+            if (dash != std::string::npos) {
+                std::string base = nameWithChip.substr(0, dash);
+                if (useIdx->packages.count(base + "-*")) {
+                    resolvedKey = base + "-*";
+                } else if (useIdx->packages.count(base + "-" + mcu)) {
+                    resolvedKey = base + "-" + mcu;
+                }
+            }
+        }
+        if (!useIdx->packages.count(resolvedKey)) {
+            return Error(ErrorCode::NotFound,
+                         "索引里找不到包: " + fullName);
+        }
+
         if (ver.empty()) {
-            ver = useIdx->findLatestVersion(name);
+            ver = useIdx->findLatestVersion(resolvedKey);
         }
         if (ver.empty()) {
             return Error(ErrorCode::NotFound,
                          "索引里找不到包: " + fullName);
         }
 
-        auto* pv = useIdx->find(name, ver);
+        auto* pv = useIdx->find(resolvedKey, ver);
         if (!pv) {
             return Error(ErrorCode::NotFound,
                          "索引里找不到包: " + fullName + "@" + ver);
         }
 
-        needed.push_back({fullName, ver});
+        needed.push_back({resolvedKey, ver});
 
-        // 递归依赖
         for (const auto& [key, type] : pv->requirements) {
             if (type.empty()) continue;
             if (type.find('/') != std::string::npos) {
-                // 域包
-                queue.push(type);
-            } else if (mainIdx.packages.count(type)) {
-                // 主仓库包
-                queue.push(type);
+                queue.push(type + "-" + mcu);
+            } else {
+                std::string k1 = type + "-" + mcu;
+                std::string k2 = type + "-*";
+                if (useIdx->packages.count(k1)) {
+                    queue.push(k1);
+                } else if (useIdx->packages.count(k2)) {
+                    queue.push(k2);
+                }
             }
-            // 其他：引脚能力，忽略
         }
     }
 
@@ -215,7 +248,6 @@ void SyncCmd::setup(CLI::App& app) {
 }
 
 int SyncCmd::run(CmdContext& ctx) {
-    // 1. 读 project.json
     Output::step("读取 project.json");
     auto proj = manifest::loadProjectFile(ctx.projectFile());
     if (!proj) {
@@ -225,7 +257,6 @@ int SyncCmd::run(CmdContext& ctx) {
     Output::detail("MCU: " + proj->mcu);
     Output::detail("设备数: " + std::to_string(proj->devices.size()));
 
-    // 2. 读已有 driver.json
     std::optional<DriverState> existing;
     if (fs::exists(ctx.driverStateFile())) {
         auto st = manifest::loadDriverStateFile(ctx.driverStateFile());
@@ -235,7 +266,6 @@ int SyncCmd::run(CmdContext& ctx) {
         }
     }
 
-    // 3. 确保依赖包在本地
     Output::step("确保依赖包在本地");
 
     registry::RegistryClient* clientPtr = nullptr;
@@ -248,7 +278,6 @@ int SyncCmd::run(CmdContext& ctx) {
         clientHolder.emplace(cfg);
         clientPtr = &*clientHolder;
 
-        // 3a. 拉主索引
         std::optional<registry::Index> mainIdx;
         {
             auto idxBar = util::ProgressBar("index.json", 0);
@@ -267,7 +296,6 @@ int SyncCmd::run(CmdContext& ctx) {
                            + std::to_string(mainIdx->domains.size()) + " 个域）");
         }
 
-        // 3b. 展开依赖
         auto needed = expandDependencies(*clientPtr, *mainIdx, proj->mcu, *proj);
         if (!needed) {
             Output::error(needed.error().message());
@@ -275,7 +303,6 @@ int SyncCmd::run(CmdContext& ctx) {
         }
         Output::detail("需要 " + std::to_string(needed->size()) + " 个包");
 
-        // 3c. 下载
         for (const auto& pkg : *needed) {
             auto bar = util::ProgressBar(pkg.fullName + "@" + pkg.version, 0);
             auto pkgPath = clientPtr->ensurePackage(pkg.fullName, pkg.version,
@@ -301,7 +328,6 @@ int SyncCmd::run(CmdContext& ctx) {
         Output::success("所有依赖包已缓存");
     }
 
-    // 4. 加载芯片驱动
     Output::step("加载芯片驱动: " + proj->mcu);
     auto chip = loadChipFromCache(ctx.packagesDir(), proj->mcu);
     if (!chip) {
@@ -309,12 +335,10 @@ int SyncCmd::run(CmdContext& ctx) {
         return 1;
     }
 
-    // 5. 加载驱动库
     Output::step("加载驱动库");
     auto lib = loadAllDrivers(ctx.packagesDir());
     Output::detail("已加载 " + std::to_string(lib.size()) + " 个驱动");
 
-    // 6. 依赖解析
     Output::step("解析依赖");
     Resolver resolver(lib, *proj, existing ? &*existing : nullptr);
     auto state = resolver.resolve();
@@ -325,7 +349,6 @@ int SyncCmd::run(CmdContext& ctx) {
     Output::detail("用户设备: " + std::to_string(state->userDevices.size()));
     Output::detail("中间设备: " + std::to_string(state->intermediateDevices.size()));
 
-    // 7. 能力检查
     Output::step("能力检查");
     CapabilityChecker checker(lib, *chip);
     auto report = checker.check(*state);
@@ -343,7 +366,6 @@ int SyncCmd::run(CmdContext& ctx) {
         return 0;
     }
 
-    // 8. 写 driver.json
     Output::step("写入 driver.json");
     auto stateJson = manifest::saveDriverState(*state);
     auto st = json::writeFile(stateJson, ctx.driverStateFile());
@@ -353,7 +375,6 @@ int SyncCmd::run(CmdContext& ctx) {
     }
     Output::success("driver.json 已更新");
 
-    // 9. 生成 driver/
     Output::step("生成 driver/");
     Generator gen(*state, lib, *proj, *chip, ctx.packagesDir(), ctx.driverDir());
     auto genSt = gen.generate();

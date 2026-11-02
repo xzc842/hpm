@@ -30,15 +30,31 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// 在 packagesDir 下找芯片驱动的 chip.json
+// 在 packagesDir 下找芯片驱动的 chip.json（芯片包目录名 <chip>-<version>）
 Result<Chip> loadChip(const fs::path& packagesDir, const std::string& mcu) {
     if (!fs::exists(packagesDir)) {
         return Error(ErrorCode::NotFound, "包目录不存在");
     }
-    for (const auto& entry : fs::directory_iterator(packagesDir)) {
+
+    fs::path dir = packagesDir;
+    std::string name = mcu;
+
+    auto slash = mcu.find('/');
+    if (slash != std::string::npos) {
+        auto domain = mcu.substr(0, slash);
+        name = mcu.substr(slash + 1);
+        dir = dir / domain;
+    }
+
+    if (!fs::exists(dir)) {
+        return Error(ErrorCode::NotFound, "域目录不存在: " + dir.string());
+    }
+
+    std::string prefix = name + "-";
+    for (const auto& entry : fs::directory_iterator(dir)) {
         if (!entry.is_directory()) continue;
-        auto name = entry.path().filename().string();
-        if (name.rfind(mcu + "-", 0) != 0) continue;
+        auto n = entry.path().filename().string();
+        if (n.rfind(prefix, 0) != 0) continue;
         auto chipJson = entry.path() / HPM_FILE_CHIP;
         if (fs::exists(chipJson)) return manifest::loadChipFile(chipJson);
     }
@@ -68,8 +84,6 @@ void FlashCmd::setup(CLI::App& app) {
 }
 
 int FlashCmd::run(CmdContext& ctx) {
-    namespace fs = std::filesystem;
-
     auto proj = manifest::loadProjectFile(ctx.projectFile());
     if (!proj) {
         Output::error(proj.error().message());

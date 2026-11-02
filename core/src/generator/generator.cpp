@@ -107,7 +107,6 @@ std::string Generator::macroValue(const std::string& v) const {
 fs::path Generator::findChipPackageDir() const {
     if (!fs::exists(packageCacheDir_)) return {};
 
-    // chip_.name 可能是 "domain/name"
     fs::path dir = packageCacheDir_;
     std::string name = chip_.name;
 
@@ -120,10 +119,12 @@ fs::path Generator::findChipPackageDir() const {
 
     if (!fs::exists(dir)) return {};
 
+    // 芯片包目录名：<chip>-<version>（两段）
+    std::string prefix = name + "-";
     for (const auto& entry : fs::directory_iterator(dir)) {
         if (!entry.is_directory()) continue;
         auto n = entry.path().filename().string();
-        if (n.rfind(name + "-", 0) != 0) continue;
+        if (n.rfind(prefix, 0) != 0) continue;
         if (fs::exists(entry.path() / HPM_FILE_CHIP)) return entry.path();
     }
     return {};
@@ -144,13 +145,25 @@ void Generator::planDriverHeader(GenerationPlan& plan) {
     // 芯片头
     out << "#include \"" << chip_.name << "/" << chip_.name << ".h\"\n";
 
-    // 设备驱动头
+    // 设备驱动头：include 裸驱动名（去掉 -<chip> 后缀）
+    auto bareDriverName = [](const std::string& full) {
+        auto slash = full.find('/');
+        if (slash != std::string::npos) {
+            auto base = full.substr(slash + 1);
+            auto dash = base.rfind('-');
+            if (dash != std::string::npos) base = base.substr(0, dash);
+            return base;
+        }
+        auto dash = full.rfind('-');
+        if (dash != std::string::npos) return full.substr(0, dash);
+        return full;
+    };
+
     for (const auto& dev : state_.userDevices) {
-        out << "#include \"" << dev.name << "/" << dev.driver << ".h\"\n";
+        out << "#include \"" << dev.name << "/" << bareDriverName(dev.driver) << ".h\"\n";
     }
     out << "\n";
 
-    // 芯片 API
     if (!chip_.provides.empty()) {
         out << "// ---------- " << chip_.name << " (chip) ----------\n";
         for (const auto& m : chip_.provides) {
@@ -159,7 +172,6 @@ void Generator::planDriverHeader(GenerationPlan& plan) {
         out << "\n";
     }
 
-    // 用户设备 API
     for (const auto& dev : state_.userDevices) {
         out << "// ---------- " << dev.name << " (" << dev.driver << ") ----------\n";
         const DriverManifest* dm = lib_.find(dev.driver);

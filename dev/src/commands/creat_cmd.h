@@ -33,6 +33,7 @@ private:
     std::string dir_;
     std::string version_ = "0.1.0";
     std::string license_ = "MIT";
+    std::string chip_ = "*";   // 目标芯片，驱动包用；芯片包自动 = name
 };
 
 } // namespace hpm::cli
