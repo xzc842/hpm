@@ -165,7 +165,7 @@ hpm debug --model <chip.json> --config <mcus.toml>
 mcus --isa <isa.so> --model ... --firmware ... --config ...
 ```
 
-- mcus 源码通过 `debug/mcus` 软链接引入，由 hpm 的 CMake 一起编译：
+- mcus 源码通过 git submodule `debug/mcus` 引入，由 hpm 的 CMake 一起编译：
   `build/bin/mcus`、`build/lib/libmcus_core.so`、`build/lib/libmcus_isa_8051.so`。
 - ISA 是外部动态库插件，必须导出 `mcus_isa_abi_version` / `mcus_isa_arch` /
   `mcus_isa_create` / `mcus_isa_destroy`（见 mcus 的 `include/mcus/isa_plugin.h`）。

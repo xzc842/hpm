@@ -103,16 +103,6 @@ std::string statusName(uint32_t status) {
     }
 }
 
-std::string eventTypeName(uint32_t type) {
-    switch (type) {
-        case HPM_DEBUG_EVENT_PIN: return "pin";
-        case HPM_DEBUG_EVENT_MMIO: return "mmio";
-        case HPM_DEBUG_EVENT_BUS: return "bus";
-        case HPM_DEBUG_EVENT_IRQ: return "irq";
-        case HPM_DEBUG_EVENT_JSON: return "json";
-        default: return "unknown";
-    }
-}
 
 } // namespace
 

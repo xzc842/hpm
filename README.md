@@ -52,11 +52,17 @@ HPM 的答案：
 需要 CMake 3.20+、C++20 编译器。
 
 ```bash
-git clone https://github.com/xzc842/hpm.git
+git clone --recurse-submodules https://github.com/xzc842/hpm.git
 cd hpm
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 sudo cp build/bin/hpm /usr/local/bin/
+```
+
+如果克隆时没有带子模块：
+
+```bash
+git submodule update --init --recursive
 ```
 
 ### 工具链

@@ -878,7 +878,7 @@ driver/
 - `--firmware`：覆盖固件（默认 `build/` 下最新的 `firmware.hex|ihx|bin`）
 - `--dry-run`：只打印启动命令
 
-mcus 源码通过 `debug/mcus` 软链接引入，由 `debug/CMakeLists.txt` 编译为
+mcus 源码通过 git submodule `debug/mcus` 引入，由 `debug/CMakeLists.txt` 编译为
 `build/bin/mcus`、`build/lib/libmcus_core.so`、`build/lib/libmcus_isa_8051.so`。
 
 `debug/host/` 是 `hpm debug` 的宿主运行时：

@@ -10,4 +10,3 @@ driver/
 compile_commands.json
 .cache/
 copyright.txt
-/debug/mcus

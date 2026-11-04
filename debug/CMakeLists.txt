@@ -14,15 +14,15 @@
 
 # debug/CMakeLists.txt
 #
-# mcus 源码通过 debug/mcus 软链接引入，作为 hpm 的一部分编译：
+# mcus 源码通过 git submodule debug/mcus 引入，作为 hpm 的一部分编译：
 #   build/bin/mcus
 #   build/lib/libmcus_core.so
 #   build/lib/libmcus_isa_8051.so
 
 if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/mcus/src/main.cpp)
     message(FATAL_ERROR
-        "debug/mcus 不存在。请先创建软链接，例如：\n"
-        "  ln -s /path/to/mcus ${CMAKE_CURRENT_SOURCE_DIR}/mcus")
+        "debug/mcus 不存在。请先初始化子模块：\n"
+        "  git submodule update --init --recursive")
 endif()
 
 include(FetchContent)
