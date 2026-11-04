@@ -31,5 +31,6 @@ add_executable(hpm
 target_link_libraries(hpm
     PRIVATE
         hpm_core
+        hpm_debug_host
         CLI11::CLI11
 )

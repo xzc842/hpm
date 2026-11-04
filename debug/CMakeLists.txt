@@ -46,6 +46,7 @@ add_library(mcus_core SHARED
     ${MCUS_SOURCE_DIR}/src/cpu.cpp
     ${MCUS_SOURCE_DIR}/src/simulator.cpp
     ${MCUS_SOURCE_DIR}/src/config.cpp
+    ${MCUS_SOURCE_DIR}/src/isa_base.cpp
     ${MCUS_SOURCE_DIR}/src/isa_registry.cpp
     ${MCUS_SOURCE_DIR}/src/firmware.cpp
     ${MCUS_SOURCE_DIR}/src/log.cpp
@@ -100,3 +101,12 @@ install(TARGETS mcus mcus_core mcus_isa_8051 dump_shm
     RUNTIME DESTINATION bin
     LIBRARY DESTINATION lib
 )
+
+# 插件开发头文件：拷贝到 build/include，供驱动 debug 插件编译时 -I
+file(COPY ${CMAKE_SOURCE_DIR}/core/include/hpm/debug/plugin.h
+     DESTINATION ${CMAKE_BINARY_DIR}/include/hpm/debug)
+
+add_subdirectory(host)
+
+install(FILES ${CMAKE_SOURCE_DIR}/core/include/hpm/debug/plugin.h
+        DESTINATION include/hpm/debug)

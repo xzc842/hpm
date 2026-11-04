@@ -1,0 +1,3 @@
+mcu = "ch552g"
+
+[devices]

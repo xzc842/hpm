@@ -1,0 +1,10 @@
+{
+  "name": "test-led-ch552",
+  "version": "1.0.0",
+  "description": "HPM debug 示例：把 P1.0 当作 LED 虚拟设备",
+  "license": "MIT",
+  "toolchain": [],
+  "config": {},
+  "requires": {},
+  "provides": { "methods": [] }
+}

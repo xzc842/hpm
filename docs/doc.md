@@ -58,7 +58,7 @@ hpm/
 │   └── src/                    实现
 ├── cli/                        hpm 命令行
 ├── dev/                        hpm-dev 命令行
-├── debug/                      mcus 模拟器集成（debug/mcus 为源码软链接）
+├── debug/                      mcus 模拟器 + debug 宿主运行时（debug/host）
 ├── gui/                        hpm-gui（未开始）
 ├── tests/                      测试
 └── docs/                       文档
@@ -880,6 +880,18 @@ driver/
 
 mcus 源码通过 `debug/mcus` 软链接引入，由 `debug/CMakeLists.txt` 编译为
 `build/bin/mcus`、`build/lib/libmcus_core.so`、`build/lib/libmcus_isa_8051.so`。
+
+`debug/host/` 是 `hpm debug` 的宿主运行时：
+
+- 根据 `driver.json` 找到用户设备的驱动包；
+- 检查 `debug/debug.c`，编译成 `build/hpm-debug/plugins/*.so`；
+- `dlopen` 插件并按设备 `create` 实例；
+- 消费 mcus 统一 `DebugEventStream`（MMIO/PIN/BUS/IRQ）；
+- 提供 CLI REPL 和 `--json` JSON Lines 协议；
+- 通过 mcus 共享内存执行 pause/resume/step/reset/断点/引脚/中断控制。
+
+插件 ABI 见 `core/include/hpm/debug/plugin.h`，规范见 `docs/debug_plugin.md`，
+外部协议见 `docs/debug_protocol.md`。
 
 ### `cli/src/commands/clean_cmd.h/.cpp`
 

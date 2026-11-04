@@ -160,6 +160,16 @@ hpm debug \
 
 默认使用 `build/` 下最新的 `firmware.hex` / `firmware.ihx` / `firmware.bin`；
 ISA 动态库按模型的 `arch` 字段自动推导（如 `8051` → `build/lib/libmcus_isa_8051.so`）。
+默认启动后暂停，等待 `run` / `step`；`--run` 可启动即运行。
+
+设备可以来自驱动包的 `debug/debug.c`，会被编译成插件并在会话中加载。
+外部程序调用使用 JSON 协议：
+
+```bash
+hpm debug --json --model ... --config ...
+```
+
+详见 [设备虚拟化插件规范](docs/debug_plugin.md) 与 [JSON 协议](docs/debug_protocol.md)。
 `--dry-run` 可以只打印最终启动命令。
 
 > 更多示例见[example](example/)
@@ -175,7 +185,7 @@ ISA 动态库按模型的 `arch` 字段自动推导（如 `8051` → `build/lib/
 | `hpm sync [--dry-run]` | 拉取依赖、解析、生成 `driver/` |
 | `hpm build` | 编译固件到 `build/` |
 | `hpm flash` | 烧录固件 |
-| `hpm debug --model <model.json> --config <config.toml>` | 在 mcus 模拟器中运行已编译固件 |
+| `hpm debug [--json] --model <model.json> --config <config.toml>` | 在 mcus 模拟器中运行固件并加载设备插件 |
 | `hpm clean` | 删除 `build/` |
 | `hpm dev --export` | 生成 `hpm.h`（底层 API） |
 

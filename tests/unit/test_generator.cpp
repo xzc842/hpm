@@ -128,8 +128,10 @@ void setupFakePackages(const fs::path& root) {
         auto d = root / "rc522-1.2.0";
         fs::create_directories(d / "src");
         fs::create_directories(d / "include");
+        fs::create_directories(d / "debug");
         std::ofstream(d / "src" / "rc522.c") << "// rc522 driver\n";
         std::ofstream(d / "include" / "rc522.h") << "// rc522 header\n";
+        std::ofstream(d / "debug" / "debug.c") << "// debug plugin\n";
     }
     // spi-1.0.0
     {
@@ -392,4 +394,22 @@ TEST_CASE("generator missing chip package", "[generator]") {
     REQUIRE(plan.error().code() == ErrorCode::NotFound);
 
     fs::remove_all(tmp);
+}
+TEST_CASE("generator excludes driver debug sources", "[generator]") {
+    auto lib   = makeLib();
+    auto state = makeState();
+    auto proj  = makeProject();
+    auto chip  = makeChip();
+
+    auto tmp = fs::temp_directory_path() / "hpm_gen_debug_test";
+    fs::remove_all(tmp);
+    setupFakePackages(tmp / "packages");
+
+    Generator gen(state, lib, proj, chip, tmp / "packages", tmp / "driver");
+    auto plan = gen.plan();
+    REQUIRE(plan.ok());
+
+    for (const auto& f : plan->files) {
+        REQUIRE(f.relativePath.string().find("debug") == std::string::npos);
+    }
 }

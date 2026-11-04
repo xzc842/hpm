@@ -20,6 +20,7 @@
 #include "../cmd_context.h"
 #include "../output.h"
 
+#include <hpm/debug/host.h>
 #include <hpm/json/json_io.h>
 #include <hpm/manifest/project_loader.h>
 #include <hpm/util/fs_utils.h>
@@ -203,9 +204,16 @@ void DebugCmd::setup(CLI::App& app) {
     app.add_option("--firmware", firmwarePath_,
                    "固件文件（默认使用 build/ 下最新的 firmware.hex|ihx|bin）");
     app.add_flag("--dry-run", dryRun_, "只打印启动命令，不运行模拟器");
+    app.add_flag("--json", jsonMode_, "JSON Lines 模式（外部程序调用）");
+    app.add_flag("--run", runImmediately_, "启动后立即运行（默认暂停）");
+    app.add_flag("--allow-missing-debug", allowMissing_,
+                 "允许没有 debug/debug.c 的设备");
+    app.add_option("--host-cc", hostCc_,
+                   "编译设备 debug 插件用的宿主机编译器（默认 cc）");
 }
 
 int DebugCmd::run(CmdContext& ctx) {
+    Output::setJsonMode(jsonMode_);
     Output::step("检查编译产物");
 
     auto proj = manifest::loadProjectFile(ctx.projectFile());
@@ -280,27 +288,21 @@ int DebugCmd::run(CmdContext& ctx) {
         return 1;
     }
 
-    const std::string shmName =
-        configValue(configPath, "simulator", "shm_name", "/mcus_shm");
-    const std::string streamName =
-        configValue(configPath, "simulator", "stream_name", "/mcus_stream");
-
-    Output::step("启动 mcus 模拟器");
-    Output::detail("模型: " + (modelName.empty() ? modelPath.string() : modelName) +
-                   " (" + arch + ")");
-    Output::detail("固件: " + firmware->string());
-    Output::detail("配置: " + configPath.string());
-    Output::detail("ISA:  " + isa->string());
-    Output::detail("共享内存: " + shmName + "，事件流: " + streamName);
-
-    std::vector<std::string> args = {
-        "--isa", isa->string(),
-        "--model", modelPath.string(),
-        "--firmware", firmware->string(),
-        "--config", configPath.string(),
-    };
-
     if (dryRun_) {
+        Output::step("启动 mcus 模拟器");
+        Output::detail("模型: " +
+                       (modelName.empty() ? modelPath.string() : modelName) +
+                       " (" + arch + ")");
+        Output::detail("固件: " + firmware->string());
+        Output::detail("配置: " + configPath.string());
+        Output::detail("ISA:  " + isa->string());
+
+        std::vector<std::string> args = {
+            "--isa", isa->string(),
+            "--model", modelPath.string(),
+            "--firmware", firmware->string(),
+            "--config", configPath.string(),
+        };
         std::cout << "    " << shellQuote(mcus->string());
         for (const auto& a : args) std::cout << ' ' << shellQuote(a);
         std::cout << "\n";
@@ -308,28 +310,24 @@ int DebugCmd::run(CmdContext& ctx) {
         return 0;
     }
 
-    auto exit = util::runProcessInherit(mcus->string(), args, ctx.projectDir());
-    if (!exit) {
-        Output::error(exit.error().message());
-        return 1;
-    }
+    hpm::debug::HostOptions options;
+    options.projectDir = ctx.projectDir();
+    options.buildDir = ctx.buildDir();
+    options.packagesDir = ctx.packagesDir();
+    options.modelPath = modelPath;
+    options.configPath = configPath;
+    options.firmwarePath = *firmware;
+    options.mcusPath = *mcus;
+    options.isaPath = *isa;
+    options.jsonMode = jsonMode_;
+    options.runImmediately = runImmediately_;
+    options.allowMissing = allowMissing_;
+    options.verbose = ctx.verbose();
+    options.hostCc = hostCc_;
 
-    if (exit->signaled) {
-        if (exit->signal == SIGINT || exit->signal == SIGTERM) {
-            Output::info("模拟器已停止");
-            return 0;
-        }
-        Output::error("模拟器被信号 " + std::to_string(exit->signal) + " 终止");
-        return 1;
-    }
-
-    if (exit->code != 0) {
-        Output::error("模拟器退出码 " + std::to_string(exit->code));
-        return 1;
-    }
-
-    Output::success("模拟器已退出");
-    return 0;
+    Output::step("设备虚拟化");
+    hpm::debug::Host host(std::move(options));
+    return host.run();
 }
 
 } // namespace hpm::cli

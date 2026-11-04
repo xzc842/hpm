@@ -40,7 +40,11 @@ private:
     std::string isaPath_;
     std::string mcusPath_;
     std::string firmwarePath_;
+    std::string hostCc_ = "cc";
     bool dryRun_ = false;
+    bool jsonMode_ = false;
+    bool runImmediately_ = false;
+    bool allowMissing_ = false;
 };
 
 } // namespace hpm::cli

@@ -89,10 +89,23 @@ int runValidate(DevContext& ctx) {
         warn("缺少 include/ 目录");
     }
 
-    // 4. .c 在 src/，.h 在 include/
+    // 4. debug/：可选，存在则必须有 debug.c
+    const fs::path debugDir = dir / "debug";
+    if (fs::exists(debugDir)) {
+        if (!fs::is_regular_file(debugDir / "debug.c")) {
+            error("debug/ 存在但缺少 debug/debug.c");
+        } else {
+            ok("debug/debug.c（设备虚拟化入口）");
+        }
+    }
+
+    // 5. .c 在 src/，.h 在 include/；debug/ 例外
     if (fs::exists(dir / HPM_DIR_SRC) && fs::exists(dir / HPM_DIR_INCLUDE)) {
         for (const auto& entry : fs::recursive_directory_iterator(dir)) {
             if (!entry.is_regular_file()) continue;
+            auto rel = fs::relative(entry.path(), dir);
+            if (!rel.empty() && *rel.begin() == "debug") continue;
+
             auto ext = entry.path().extension();
             auto parent = entry.path().parent_path().filename().string();
 
@@ -105,7 +118,7 @@ int runValidate(DevContext& ctx) {
         }
     }
 
-    // 5. ld/ 目录（ARM 芯片）
+    // 6. ld/ 目录（ARM 芯片）
     if (fs::exists(chipJson)) {
         auto chip = hpm::manifest::loadChipFile(chipJson);
         if (chip && !chip->build.ldscript.empty()) {

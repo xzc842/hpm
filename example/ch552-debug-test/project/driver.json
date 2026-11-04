@@ -1,0 +1,11 @@
+{
+  "intermediate_devices": {},
+  "user_devices": {
+    "led": {
+      "config": {},
+      "driver": "test-led-ch552",
+      "version": "1.0.0",
+      "led": "P1_0"
+    }
+  }
+}

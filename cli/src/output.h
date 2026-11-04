@@ -33,6 +33,9 @@ public:
 
     // 是否用彩色（非 tty 时关闭）
     static void setColor(bool on);
+
+    // JSON 模式：所有人类可读输出改到 stderr，保持 stdout 只有 JSON
+    static void setJsonMode(bool on);
 };
 
 } // namespace hpm::cli
