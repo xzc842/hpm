@@ -1,6 +1,6 @@
 # HPM 设备虚拟化插件开发规范
 
-> 适用版本：`hpm-debug/1`、插件 ABI `1`
+> 适用版本：`hpm-debug/2`、插件 ABI `1`
 
 驱动包可以在根目录下提供 `debug/`，让设备在 `hpm debug` 中被虚拟化。
 `hpm sync` 生成 `driver/` 时**不会**复制 `debug/`，它只用于调试会话。
@@ -232,6 +232,65 @@ typedef struct HpmDebugHostApi {
 ### `bus_write`
 
 回应总线事务，`xfer_id` 与收到的 BUS 事件对应。
+
+---
+
+## 6.5 设备 UI / 状态 / 错误
+
+插件通过 `emit_json` 发送保留键：
+
+### `$ui`
+
+设备元数据，用于 `device.list` / `device.describe`：
+
+```json
+{"$ui":{
+  "schema":"hpm-ui/1",
+  "role":"output",
+  "title":"LED",
+  "channels":[
+    {"id":"power","name":"电源","direction":"out",
+     "type":"bool","widget":"lamp","readonly":true}
+  ]
+}}
+```
+
+- 可以在 `create` 中直接发；host 会缓存，不会作为普通 JSON 转发。
+- host 支持 `describe` 指令：插件收到 `{"cmd":"describe"}` 后可以重新发 `$ui`。
+- `role`：`input` / `output` / `bidirectional` / `unknown`。
+- 通道字段见协议文档 `device.describe` 一节。
+
+### `$state`
+
+设备状态增量：
+
+```json
+{"$state":{"power":true,"brightness":80}}
+```
+
+- host 合并到该设备状态缓存。
+- 转向外部程序为 `type:"state"` 事件。
+- `null` 表示未知/失效。
+
+### `$error`
+
+```json
+{"$error":{"code":"i2c_timeout","message":"I2C 无响应",
+           "channel":"brightness","fatal":false}}
+```
+
+- `fatal=true` 会标记设备 `online=false`。
+- 非致命错误只记录最后错误。
+
+### 外部输入
+
+外部程序的 `data` 会以 `HPM_DEBUG_EVENT_JSON` 传入，例如：
+
+```json
+{"device":"led","data":{"power":"on"}}
+```
+
+插件事件里 `ev->u.json == "{\"power\":\"on\"}"`。
 
 ---
 

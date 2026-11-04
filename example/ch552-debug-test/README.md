@@ -26,3 +26,22 @@ hpm --cache-dir ../.work/cache -C . debug \
   --model ../../../debug/mcus/models/ch552g.json \
   --config ../../../debug/mcus/config/example.toml
 ```
+
+
+## 调试命令示例
+
+CLI：
+
+```text
+hpm> run
+hpm> mem code 0 32
+hpm> mem iram 0 16
+hpm> mem sfr 0x80 16
+```
+
+JSON：
+
+```json
+{"id":1,"device":"mcu","cmd":"mem.read","space":"code","addr":"0x0","length":32}
+{"id":2,"device":"mcu","cmd":"mem.read","space":"iram","addr":"0x0","length":16}
+```

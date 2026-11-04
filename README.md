@@ -284,19 +284,19 @@ driver = "<驱动名>"
 - [x] hpm-dev：驱动开发工具（validate）
 - [x] 许可证处理：驱动包带 license
 - [x] hpm-dev：驱动开发工具（init / test / publish）
+- [x] 自研 MCUS 通用架构单片机模拟器：`hpm debug` 支持单片机和设备虚拟化测试
+- [x] hpm-gui：图形化生成 `project.json`
+- [x] KiCad 导入：从原理图生成 `project.json`
 
 ### 进行中
 
 - [ ] **适配Windows**
 - [ ] **toolchain 管理**：自动下载工具链
-- [ ] **QEMU 测试**：`hpm-dev test` 支持多芯片模拟
 - [ ] **AI 驱动包生成**：从文档 + 开源代码整理驱动包
 
 ### 计划中
 
-- [ ] **hpm-gui**：Qt 图形化生成 `project.json`
-- [ ] **KiCad 导入**：从原理图生成 `project.json`
-- [ ] **Debug**:`hpm-debug`qemu模拟芯片，并加载外设驱动包内的debug模块，例如wifi模块，可以使用本机的wifi,或桥接到本机网络，舵机输出角度，屏幕输出媒体流
+
 - [ ] **虚拟仿真环境**：通过blender插件将虚拟设备添加并绑定到3d场景，在godot模拟器上进行仿真，计划通过**[影梦启动器](https://gitcode.com/astercore/YingmengStudio)**生成虚拟环境（通过插件接入hpm-debug）
 
 ---

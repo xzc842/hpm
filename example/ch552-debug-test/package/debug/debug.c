@@ -17,6 +17,13 @@ void* hpm_debug_create(const HpmDebugHostApi* api,
     g_api = api;
     strncpy(g_name, info->device, sizeof(g_name) - 1);
     g_name[sizeof(g_name) - 1] = '\0';
+
+    const char* ui =
+        "{\"$ui\":{\"schema\":\"hpm-ui/1\",\"role\":\"output\","
+        "\"title\":\"LED\",\"channels\":["
+        "{\"id\":\"power\",\"name\":\"Power\",\"direction\":\"out\","
+        "\"type\":\"bool\",\"widget\":\"lamp\",\"readonly\":true}]}}";
+    g_api->emit_json(g_api->host, ui);
     return g_name;
 }
 
@@ -31,10 +38,11 @@ int hpm_debug_event(void* ctx, const HpmDebugEvent* ev) {
         snprintf(msg, sizeof(msg), "%s=%u", ev->u.pin.pin, ev->u.pin.value);
         g_api->log(g_api->host, HPM_DEBUG_LOG_INFO, msg);
 
-        char js[160];
-        snprintf(js, sizeof(js), "{\"pin\":\"%s\",\"value\":%u}",
-                 ev->u.pin.pin, ev->u.pin.value);
-        g_api->emit_json(g_api->host, js);
+        char state[160];
+        snprintf(state, sizeof(state),
+                 "{\"$state\":{\"power\":%s}}",
+                 ev->u.pin.value ? "true" : "false");
+        g_api->emit_json(g_api->host, state);
     } else if (ev->type == HPM_DEBUG_EVENT_JSON) {
         char msg[256];
         snprintf(msg, sizeof(msg), "input: %s", ev->u.json);

@@ -82,6 +82,17 @@ std::string sanitizeName(const std::string& s) {
 
 std::string readCString(const char* s) { return s ? s : ""; }
 
+std::string toHex(const uint8_t* data, size_t len) {
+    static const char* digits = "0123456789abcdef";
+    std::string out;
+    out.reserve(len * 2);
+    for (size_t i = 0; i < len; ++i) {
+        out.push_back(digits[data[i] >> 4]);
+        out.push_back(digits[data[i] & 0x0F]);
+    }
+    return out;
+}
+
 std::string statusName(uint32_t status) {
     switch (status) {
         case 0: return "running";
@@ -134,6 +145,7 @@ struct Host::Impl {
         Impl* host = nullptr;
         std::string name;
         std::string driver;
+        std::string version;
         std::string packageDir;
         PluginLib* lib = nullptr;
         void* ctx = nullptr;
@@ -144,6 +156,16 @@ struct Host::Impl {
         std::vector<HpmDebugKv> bindingKv;
         std::vector<uint32_t> pinIds;
         std::set<std::string> pinNames;
+
+        // 设备 UI/状态缓存
+        json::Value ui = json::Value::object();
+        bool hasUi = false;
+        json::Value state = json::Value::object();
+        bool online = true;
+        uint64_t lastUpdate = 0;
+        std::string lastError;
+        bool describing = false;
+        bool creating = true;
     };
 
     std::vector<std::unique_ptr<DeviceCtx>> devices;
@@ -151,9 +173,28 @@ struct Host::Impl {
     std::map<std::string, std::string> canonicalToPin; // canonical -> model pin
     std::map<std::string, uint32_t> pinNameToId;       // canonical -> index
     std::vector<std::vector<DeviceCtx*>> pinDevices;
+    std::vector<std::vector<std::string>> pinDeviceNames;
 
-    std::set<uint32_t> breakpoints;
+    struct PinSub {
+        bool active = false;
+        bool all = false;
+        std::set<uint32_t> pins;
+        std::string mode = "change";
+        uint32_t intervalMs = 50;
+        std::chrono::steady_clock::time_point lastFlush;
+        std::map<uint32_t, mcus::PinEvent> pending;
+    };
+    PinSub pinSub;
+    std::mutex pinSubMutex;
+
+    std::map<uint32_t, bool> breakpoints; // addr -> enabled
+    std::map<uint32_t, uint32_t> bpHitCount;
     bool bpReported = false;
+    std::string stopReason;
+    uint32_t stopAddr = 0;
+    std::string lastStatusEvent;
+    std::string lastStopReasonEvent;
+    uint64_t outSeq = 0;
 
     mutable std::mutex outMutex;
     std::recursive_mutex pluginMutex;
@@ -176,8 +217,10 @@ struct Host::Impl {
     }
 
     void writeJsonLine(const json::Value& v) {
+        auto out = v;
+        out.set("seq", static_cast<uint64_t>(outSeq++));
         std::lock_guard<std::mutex> lock(outMutex);
-        std::cout << json::dump(v, -1) << "\n";
+        std::cout << json::dump(out, -1) << "\n";
         std::cout.flush();
     }
 
@@ -195,13 +238,81 @@ struct Host::Impl {
         }
     }
 
-    void deviceJson(const DeviceCtx& dev, const std::string& text) {
+    void deviceJson(DeviceCtx& dev, const std::string& text) {
         auto parsed = json::parse(text);
         if (!parsed || !parsed->isObject()) {
             deviceLog(dev, HPM_DEBUG_LOG_ERROR,
                       "emit_json 不是合法 JSON object");
             return;
         }
+
+        // 设备 UI 描述
+        if (parsed->has("$ui")) {
+            auto ui = parsed->get("$ui");
+            if (!ui || !ui->isObject()) {
+                deviceLog(dev, HPM_DEBUG_LOG_ERROR, "$ui 必须是 object");
+                return;
+            }
+            dev.ui = *ui;
+            dev.hasUi = true;
+            if (opts.jsonMode && !dev.creating) {
+                auto out = json::Value::object();
+                out.set("device", dev.name);
+                out.set("type", "event");
+                out.set("event", "device.updated");
+                out.set("time", static_cast<uint64_t>(readVirtualTime()));
+                out.set("ui", *ui);
+                writeJsonLine(out);
+            }
+            return;
+        }
+
+        // 设备状态增量
+        if (parsed->has("$state")) {
+            auto st = parsed->get("$state");
+            if (!st || !st->isObject()) {
+                deviceLog(dev, HPM_DEBUG_LOG_ERROR, "$state 必须是 object");
+                return;
+            }
+            auto keys = st->keys();
+            if (keys) {
+                for (const auto& key : *keys) {
+                    auto value = st->get(key);
+                    if (value) dev.state.set(key, *value);
+                }
+            }
+            dev.lastUpdate = readVirtualTime();
+            if (opts.jsonMode && !dev.creating) {
+                auto out = json::Value::object();
+                out.set("device", dev.name);
+                out.set("type", "state");
+                out.set("time", static_cast<uint64_t>(dev.lastUpdate));
+                out.set("online", dev.online);
+                out.set("values", dev.state);
+                writeJsonLine(out);
+            }
+            return;
+        }
+
+        // 设备错误
+        if (parsed->has("$error")) {
+            auto err = parsed->get("$error");
+            if (err && err->isObject()) {
+                dev.lastError = err->getString("message", "");
+                if (err->getBool("fatal", false)) dev.online = false;
+                if (opts.jsonMode) {
+                    auto out = json::Value::object();
+                    out.set("device", dev.name);
+                    out.set("type", "error");
+                    out.set("time", static_cast<uint64_t>(readVirtualTime()));
+                    out.set("error", *err);
+                    writeJsonLine(out);
+                }
+            }
+            return;
+        }
+
+        if (dev.describing) return;
 
         if (opts.jsonMode) {
             auto out = json::Value::object();
@@ -255,6 +366,85 @@ struct Host::Impl {
                 std::strtoll(str->c_str(), nullptr, 0));
         }
         return fallback;
+    }
+
+    int spaceIndex(const std::string& space) const {
+        for (size_t i = 0; i < model.space_order.size(); ++i) {
+            if (model.space_order[i] == space) return static_cast<int>(i);
+        }
+        return -1;
+    }
+
+    int mcuDump(const std::string& space, uint32_t addr, uint32_t length,
+                std::string& hex, uint32_t& actual, bool& inRange,
+                std::string& error, std::string& errorCode) {
+        inRange = false;
+        if (!shm) {
+            error = "模拟器未连接";
+            errorCode = "error";
+            return -1;
+        }
+        const int idx = spaceIndex(space);
+        if (idx < 0) {
+            error = "未知地址空间: " + space;
+            errorCode = "unknown_space";
+            return -1;
+        }
+        const size_t cap = shm->dump_buffer_size();
+        if (length == 0) {
+            error = "length 必须大于 0";
+            errorCode = "out_of_range";
+            return -1;
+        }
+        if (length > cap) {
+            error = "length 超过上限 " + std::to_string(cap);
+            errorCode = "too_large";
+            return -1;
+        }
+        const mcus::MemoryRegion* region = model.find_region(space, addr);
+        if (!region) {
+            inRange = false;
+            actual = 0;
+            hex.clear();
+            return 0;
+        }
+        inRange = true;
+
+        const bool was_running =
+            readStatus() == static_cast<uint32_t>(mcus::ControlStatus::Running);
+        if (was_running && mcuPause() != 0) {
+            error = "dump 前暂停失败";
+            errorCode = "busy";
+            return -1;
+        }
+
+        auto* ctl = shm->control();
+        ctl->dump_ready.store(0);
+        ctl->dump_addr.store(addr);
+        ctl->dump_len.store(length);
+        ctl->dump_space_idx.store(static_cast<uint32_t>(idx));
+        ctl->command.store(static_cast<uint32_t>(mcus::ControlCommand::Dump));
+
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::seconds(2);
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (ctl->dump_ready.load() != 0) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        if (ctl->dump_ready.load() == 0) {
+            if (was_running) mcuResume();
+            error = "dump 超时";
+            errorCode = "timeout";
+            return -1;
+        }
+
+        actual = ctl->dump_len.load();
+        if (actual > length) actual = length;
+        if (actual > cap) actual = static_cast<uint32_t>(cap);
+        hex = toHex(shm->dump_buffer(), actual);
+
+        if (was_running) mcuResume();
+        return 0;
     }
 
     // ---------- 配置与进程 ----------
@@ -545,6 +735,7 @@ struct Host::Impl {
             canonicalToPin[canon] = model.pins[i].name;
         }
         pinDevices.resize(model.pins.size());
+        pinDeviceNames.resize(model.pins.size());
     }
 
     uint32_t pinIdFor(const std::string& raw) const {
@@ -573,6 +764,7 @@ struct Host::Impl {
             ctx->host = this;
             ctx->name = dev.name;
             ctx->driver = dev.driver;
+            ctx->version = dev.version.toString();
             ctx->packageDir = pkg->string();
             ctx->lib = &libs.at(dev.driver + "@" + dev.version.toString());
             ctx->config = dev.config;
@@ -631,12 +823,16 @@ struct Host::Impl {
             info.binding_count = ctx->bindingKv.size();
 
             ctx->ctx = ctx->lib->create(&ctx->api, &info);
+            ctx->creating = false;
             if (!ctx->ctx) {
                 writeErr("error 设备插件初始化失败: " + ctx->name);
                 return false;
             }
             for (uint32_t id : ctx->pinIds) {
-                if (id < pinDevices.size()) pinDevices[id].push_back(ctx.get());
+                if (id < pinDevices.size()) {
+                    pinDevices[id].push_back(ctx.get());
+                    pinDeviceNames[id].push_back(ctx->name);
+                }
             }
         }
         return true;
@@ -697,6 +893,167 @@ struct Host::Impl {
     }
 
     // ---------- 引脚/注入 ----------
+    json::Value pinInfoJson(uint32_t id, uint32_t changed = 0) const {
+        auto obj = json::Value::object();
+        const auto& pin = model.pins[id];
+        const auto* pins = shm->pins();
+        const std::string canon = canonicalPin(pin.name);
+        const uint32_t function = pins[id].function.load();
+        const uint32_t direction = pins[id].direction.load();
+
+        obj.set("name", canon);
+        obj.set("number", static_cast<uint64_t>(pin.number));
+        obj.set("value", pins[id].value.load());
+        obj.set("function", function);
+        std::string functionName;
+        if (function < pin.functions.size()) functionName = pin.functions[function];
+        obj.set("function_name", functionName);
+        auto functions = json::Value::array();
+        for (const auto& f : pin.functions) functions.push(f);
+        obj.set("functions", functions);
+        obj.set("direction", direction);
+        obj.set("direction_name", direction == 0 ? "input" : "output");
+        auto devs = json::Value::array();
+        for (const auto& d : pinDeviceNames[id]) devs.push(d);
+        obj.set("devices", devs);
+        if (changed != 0) obj.set("changed", changed);
+        return obj;
+    }
+
+    void queuePinChange(const mcus::PinEvent& pe) {
+        std::lock_guard<std::mutex> lock(pinSubMutex);
+        if (!pinSub.active) return;
+        if (!pinSub.all && !pinSub.pins.count(pe.pin_id)) return;
+        auto it = pinSub.pending.find(pe.pin_id);
+        if (it == pinSub.pending.end()) {
+            pinSub.pending.emplace(pe.pin_id, pe);
+        } else {
+            it->second.value = pe.value;
+            it->second.function = pe.function;
+            it->second.direction = pe.direction;
+            it->second.changed |= pe.changed;
+        }
+    }
+
+    void emitPinSnapshot(const std::set<uint32_t>& ids) {
+        if (!opts.jsonMode) return;
+        auto arr = json::Value::array();
+        for (uint32_t id : ids) {
+            if (id < model.pins.size()) arr.push(pinInfoJson(id, 7));
+        }
+        auto out = json::Value::object();
+        out.set("device", "mcu");
+        out.set("type", "event");
+        out.set("event", "pin.snapshot");
+        out.set("time", static_cast<uint64_t>(readVirtualTime()));
+        out.set("pins", arr);
+        writeJsonLine(out);
+    }
+
+    void flushPinSubscription() {
+        if (!opts.jsonMode) return;
+        std::vector<uint32_t> ids;
+        std::map<uint32_t, uint32_t> changedMap;
+        bool allMode = false;
+        {
+            std::lock_guard<std::mutex> lock(pinSubMutex);
+            if (!pinSub.active) return;
+            const auto now = std::chrono::steady_clock::now();
+            const auto elapsed =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now - pinSub.lastFlush).count();
+            if (elapsed < static_cast<long long>(pinSub.intervalMs)) return;
+
+            allMode = pinSub.mode == "all";
+            if (allMode) {
+                ids.assign(pinSub.pins.begin(), pinSub.pins.end());
+            } else {
+                for (const auto& [id, pe] : pinSub.pending) {
+                    ids.push_back(id);
+                    changedMap[id] = pe.changed;
+                }
+            }
+            pinSub.pending.clear();
+            pinSub.lastFlush = now;
+        }
+        if (ids.empty()) return;
+
+        auto arr = json::Value::array();
+        for (uint32_t id : ids) {
+            arr.push(pinInfoJson(id, changedMap.count(id) ? changedMap[id] : 0));
+        }
+        auto out = json::Value::object();
+        out.set("device", "mcu");
+        out.set("type", "pin");
+        out.set("time", static_cast<uint64_t>(readVirtualTime()));
+        out.set("pins", arr);
+        writeJsonLine(out);
+    }
+
+    // ---------- 设备元数据/状态 ----------
+    json::Value deviceInfoJson(const DeviceCtx& d) const {
+        auto obj = json::Value::object();
+        obj.set("device", d.name);
+        obj.set("driver", d.driver);
+        obj.set("version", d.version);
+        obj.set("online", d.online);
+        std::string role = "unknown";
+        std::string title = d.name;
+        if (d.hasUi) {
+            role = d.ui.getString("role", role);
+            title = d.ui.getString("title", title);
+        }
+        obj.set("role", role);
+        obj.set("title", title);
+        if (d.hasUi && d.ui.has("channels")) {
+            auto ch = d.ui.get("channels");
+            if (ch) obj.set("channels", *ch);
+            else obj.set("channels", json::Value::array());
+        } else {
+            obj.set("channels", json::Value::array());
+        }
+        if (!d.lastError.empty()) obj.set("last_error", d.lastError);
+        return obj;
+    }
+
+    void requestDescribe(DeviceCtx& d) {
+        if (d.hasUi || !d.ctx || !d.lib || !d.lib->event) return;
+        d.describing = true;
+        const char* req = "{\"cmd\":\"describe\"}";
+        HpmDebugEvent ev{};
+        ev.type = HPM_DEBUG_EVENT_JSON;
+        ev.u.json = req;
+        {
+            std::lock_guard<std::recursive_mutex> lock(pluginMutex);
+            d.lib->event(d.ctx, &ev);
+        }
+        d.describing = false;
+    }
+
+    json::Value deviceDescribeResult(DeviceCtx& d) {
+        requestDescribe(d);
+        json::Value result = d.hasUi ? d.ui : json::Value::object();
+        if (!d.hasUi) {
+            result.set("schema", "hpm-ui/1");
+            result.set("role", "unknown");
+            result.set("title", d.name);
+            result.set("channels", json::Value::array());
+        }
+        result.set("state", d.state);
+        result.set("online", d.online);
+        return result;
+    }
+
+    json::Value deviceStateJson(const DeviceCtx& d) const {
+        auto obj = json::Value::object();
+        obj.set("device", d.name);
+        obj.set("online", d.online);
+        obj.set("last_update", static_cast<uint64_t>(d.lastUpdate));
+        obj.set("values", d.state);
+        if (!d.lastError.empty()) obj.set("error", d.lastError);
+        return obj;
+    }
+
     int setPin(const std::string& canon, uint32_t value) {
         std::lock_guard<std::recursive_mutex> pluginLock(pluginMutex);
         const auto it = pinNameToId.find(canon);
@@ -715,6 +1072,7 @@ struct Host::Impl {
         pe.function = pins[idx].function.load();
         pe.direction = pins[idx].direction.load();
         pe.changed = 1;
+        queuePinChange(mcus::PinEvent{idx, value, pe.function, pe.direction, 1});
         HpmDebugEvent ev{};
         ev.type = HPM_DEBUG_EVENT_PIN;
         ev.u.pin = pe;
@@ -772,15 +1130,48 @@ struct Host::Impl {
     }
 
     // ---------- mcu 控制 ----------
+    void emitStatusEvent() {
+        if (!opts.jsonMode || !shm) return;
+        const std::string st = statusName(readStatus());
+        auto out = json::Value::object();
+        out.set("device", "mcu");
+        out.set("type", "event");
+        out.set("event", "status");
+        out.set("time", static_cast<uint64_t>(readVirtualTime()));
+        out.set("status", st);
+        out.set("pc", static_cast<uint64_t>(readPc()));
+        out.set("halted", static_cast<bool>(shm->control()->halted.load()));
+        out.set("stop_reason", stopReason);
+        out.set("stop_addr", static_cast<uint64_t>(stopAddr));
+        if (stopReason == "breakpoint") {
+            auto bp = json::Value::object();
+            bp.set("addr", static_cast<uint64_t>(stopAddr));
+            bp.set("hit_count",
+                   static_cast<uint64_t>(bpHitCount[stopAddr]));
+            out.set("breakpoint", bp);
+        }
+        writeJsonLine(out);
+        lastStatusEvent = st;
+        lastStopReasonEvent = stopReason;
+    }
+
     int mcuStatus(json::Value& result) {
         result = json::Value::object();
-        result.set("status", statusName(readStatus()));
+        const std::string st = statusName(readStatus());
+        result.set("status", st);
         result.set("pc", static_cast<uint64_t>(readPc()));
         result.set("virtual_time", static_cast<uint64_t>(readVirtualTime()));
         result.set("halted", static_cast<bool>(shm->control()->halted.load()));
+        result.set("stop_reason", stopReason);
+        result.set("stop_addr", static_cast<uint64_t>(stopAddr));
         auto bps = json::Value::array();
-        for (uint32_t addr : breakpoints) {
-            bps.push(static_cast<uint64_t>(addr));
+        for (const auto& [addr, enabled] : breakpoints) {
+            auto obj = json::Value::object();
+            obj.set("addr", static_cast<uint64_t>(addr));
+            obj.set("enabled", enabled);
+            obj.set("hit_count",
+                    static_cast<uint64_t>(bpHitCount[addr]));
+            bps.push(obj);
         }
         result.set("breakpoints", bps);
         return 0;
@@ -797,15 +1188,20 @@ struct Host::Impl {
     }
 
     int mcuPause() {
+        stopReason = "pause";
+        stopAddr = readPc();
         shm->control()->command.store(
             static_cast<uint32_t>(mcus::ControlCommand::Pause));
-        return waitStatus(static_cast<uint32_t>(mcus::ControlStatus::Paused))
-                   ? 0
-                   : -1;
+        const bool ok =
+            waitStatus(static_cast<uint32_t>(mcus::ControlStatus::Paused));
+        if (ok) stopAddr = readPc();
+        return ok ? 0 : -1;
     }
 
     int mcuResume() {
         bpReported = false;
+        stopReason.clear();
+        stopAddr = 0;
         shm->control()->command.store(
             static_cast<uint32_t>(mcus::ControlCommand::Resume));
         // 可能一恢复就命中断点，不能强等 Running
@@ -815,6 +1211,8 @@ struct Host::Impl {
 
     int mcuStep(uint32_t count) {
         bpReported = false;
+        stopReason = "step";
+        stopAddr = 0;
         if (count == 0) count = 1;
         shm->control()->step_count.store(count);
         shm->control()->command.store(
@@ -825,14 +1223,20 @@ struct Host::Impl {
             const uint32_t st = readStatus();
             if (st == static_cast<uint32_t>(mcus::ControlStatus::Paused) ||
                 st == static_cast<uint32_t>(mcus::ControlStatus::Halted)) {
-                return 0;
+                break;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
-        return -1;
+        if (readStatus() == static_cast<uint32_t>(mcus::ControlStatus::Halted)) {
+            stopReason = "halt";
+            stopAddr = readPc();
+        }
+        return 0;
     }
 
     int mcuReset() {
+        stopReason = "reset";
+        stopAddr = 0;
         shm->control()->command.store(
             static_cast<uint32_t>(mcus::ControlCommand::Reset));
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -844,10 +1248,10 @@ struct Host::Impl {
         auto* slots = shm->breakpoints();
         const uint32_t cap = static_cast<uint32_t>(shm->breakpoint_capacity());
         uint32_t i = 0;
-        for (uint32_t addr : breakpoints) {
+        for (const auto& [addr, enabled] : breakpoints) {
             if (i >= cap) break;
             slots[i].addr.store(addr);
-            slots[i].enabled.store(1);
+            slots[i].enabled.store(enabled ? 1 : 0);
             ++i;
         }
         bh->count.store(i);
@@ -856,8 +1260,8 @@ struct Host::Impl {
         bh->hit_addr.store(0);
         bpReported = false;
         if (i > 0) {
-            bh->min_addr.store(*breakpoints.begin());
-            bh->max_addr.store(*breakpoints.rbegin());
+            bh->min_addr.store(breakpoints.begin()->first);
+            bh->max_addr.store(breakpoints.rbegin()->first);
         } else {
             bh->min_addr.store(0);
             bh->max_addr.store(0);
@@ -865,14 +1269,27 @@ struct Host::Impl {
     }
 
     int bpSet(uint32_t addr) {
-        if (breakpoints.size() >= shm->breakpoint_capacity()) return -1;
-        breakpoints.insert(addr);
+        if (!breakpoints.count(addr) &&
+            breakpoints.size() >= shm->breakpoint_capacity()) {
+            return -1;
+        }
+        breakpoints[addr] = true;
+        bpHitCount.emplace(addr, 0);
         applyBreakpoints();
         return 0;
     }
 
     int bpClear(uint32_t addr) {
         breakpoints.erase(addr);
+        bpHitCount.erase(addr);
+        applyBreakpoints();
+        return 0;
+    }
+
+    int bpEnable(uint32_t addr, bool enabled) {
+        auto it = breakpoints.find(addr);
+        if (it == breakpoints.end()) return -1;
+        it->second = enabled;
         applyBreakpoints();
         return 0;
     }
@@ -892,6 +1309,10 @@ struct Host::Impl {
                 pe.function = ev.u.pin.function;
                 pe.direction = ev.u.pin.direction;
                 pe.changed = ev.u.pin.changed;
+
+                queuePinChange(mcus::PinEvent{
+                    ev.u.pin.pin_id, ev.u.pin.value, ev.u.pin.function,
+                    ev.u.pin.direction, ev.u.pin.changed});
 
                 HpmDebugEvent out{};
                 out.type = HPM_DEBUG_EVENT_PIN;
@@ -963,12 +1384,16 @@ struct Host::Impl {
             if (!got) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
+            flushPinSubscription();
             if (shm) {
                 auto* bh = shm->breakpoint_header();
                 if (bh->hit.load() != 0 && !bpReported) {
                     bpReported = true;
                     const uint32_t addr = bh->hit_addr.load();
                     const uint32_t pc = readPc();
+                    stopReason = "breakpoint";
+                    stopAddr = addr;
+                    ++bpHitCount[addr];
                     if (opts.jsonMode) {
                         auto out = json::Value::object();
                         out.set("device", "mcu");
@@ -977,12 +1402,32 @@ struct Host::Impl {
                         out.set("addr", static_cast<uint64_t>(addr));
                         out.set("pc", static_cast<uint64_t>(pc));
                         out.set("time", static_cast<uint64_t>(readVirtualTime()));
+                        out.set("hit_count",
+                                static_cast<uint64_t>(bpHitCount[addr]));
                         writeJsonLine(out);
+                        emitStatusEvent();
                     } else {
                         writeLine("[mcu] 断点命中 0x" +
                                   std::to_string(addr) + " pc=0x" +
                                   std::to_string(pc));
+                        emitStatusEvent();
                     }
+                }
+                // 其他状态迁移（halt 等）
+                const std::string st = statusName(readStatus());
+                if (st != lastStatusEvent ||
+                    (st == "paused" && stopReason != lastStopReasonEvent)) {
+                    if (st == "halted") {
+                        stopReason = "halt";
+                        stopAddr = readPc();
+                    } else if (st == "running") {
+                        stopReason.clear();
+                        stopAddr = 0;
+                    } else if (st == "paused" && stopReason.empty()) {
+                        stopReason = "pause";
+                        stopAddr = readPc();
+                    }
+                    emitStatusEvent();
                 }
             }
             int status = 0;
@@ -1029,26 +1474,61 @@ struct Host::Impl {
         out.set("device", "mcu");
         out.set("type", "event");
         out.set("event", "ready");
-        out.set("protocol", "hpm-debug/1");
+        out.set("protocol", "hpm-debug/2");
         out.set("status", statusName(readStatus()));
+
+        auto features = json::Value::array();
+        for (const char* f : {
+                 "pin.list", "pin.subscribe", "pin.unsubscribe",
+                 "pin.snapshot",
+                 "device.list", "device.describe", "device.state",
+                 "device.snapshot", "device.updated", "device.error",
+                 "mem.read", "mem.regions",
+                 "status.event", "breakpoint.object", "seq"}) {
+            features.push(f);
+        }
+        out.set("features", features);
+
+        auto limits = json::Value::object();
+        limits.set("max_breakpoints",
+                   static_cast<uint64_t>(shm->breakpoint_capacity()));
+        limits.set("max_mem_read",
+                   static_cast<uint64_t>(shm->dump_buffer_size()));
+        limits.set("pin_subscribe_min_ms", static_cast<uint64_t>(10));
+        limits.set("pin_subscribe_max_ms", static_cast<uint64_t>(1000));
+        out.set("limits", limits);
+
+        auto modelObj = json::Value::object();
+        modelObj.set("name", model.name);
+        modelObj.set("arch", model.arch);
+        modelObj.set("pins", static_cast<uint64_t>(model.pins.size()));
+        auto spaces = json::Value::array();
+        for (const auto& sp : model.space_order) spaces.push(sp);
+        modelObj.set("spaces", spaces);
+        out.set("model", modelObj);
+
         auto names = json::Value::array();
         for (const auto& d : devices) names.push(d->name);
         out.set("devices", names);
+        lastStatusEvent = statusName(readStatus());
+        lastStopReasonEvent = stopReason;
         writeJsonLine(out);
     }
 
     json::Value makeResponse(const json::Value& req, bool ok,
                              const json::Value& result,
-                             const std::string& error = "") {
+                             const std::string& error = "",
+                             const std::string& errorCode = "error",
+                             const std::string& deviceName = "mcu") {
         auto out = json::Value::object();
         if (req.has("id")) out.set("id", req.get("id").value());
-        out.set("device", "mcu");
+        out.set("device", deviceName);
         out.set("type", "response");
         out.set("ok", ok);
         if (ok) out.set("result", result);
         else {
             auto err = json::Value::object();
-            err.set("code", "error");
+            err.set("code", errorCode);
             err.set("message", error);
             out.set("error", err);
         }
@@ -1059,9 +1539,149 @@ struct Host::Impl {
         const std::string cmd = req.getString("cmd", "");
         json::Value result = json::Value::object();
         std::string error;
+        std::string errorCode = "error";
 
         if (cmd == "status") {
             mcuStatus(result);
+        } else if (cmd == "pin.list") {
+            auto pins = json::Value::array();
+            for (uint32_t i = 0; i < model.pins.size(); ++i) {
+                pins.push(pinInfoJson(i));
+            }
+            result.set("pins", pins);
+        } else if (cmd == "pin.subscribe") {
+            auto pinsJson = req.get("pins");
+            if (!pinsJson || !pinsJson->isArray()) {
+                error = "pins 必须是数组";
+                errorCode = "invalid_argument";
+            } else {
+                std::set<uint32_t> ids;
+                bool all = false;
+                auto size = pinsJson->size();
+                for (size_t i = 0; i < (size ? *size : 0); ++i) {
+                    auto item = pinsJson->at(i);
+                    if (!item || !item->isString()) continue;
+                    const std::string name = *item->asString();
+                    if (name == "*") {
+                        all = true;
+                        continue;
+                    }
+                    const uint32_t id = pinIdFor(name);
+                    if (id == UINT32_MAX) {
+                        error = "未知引脚: " + name;
+                        errorCode = "unknown_pin";
+                        break;
+                    }
+                    ids.insert(id);
+                }
+                const std::string mode = req.getString("mode", "change");
+                const int64_t interval = req.getInt("interval_ms", 50);
+                if (error.empty()) {
+                    if (mode != "change" && mode != "all") {
+                        error = "mode 必须是 change 或 all";
+                        errorCode = "invalid_argument";
+                    } else if (interval < 10 || interval > 1000) {
+                        error = "interval_ms 必须在 10..1000";
+                        errorCode = "invalid_argument";
+                    } else {
+                        if (all) {
+                            ids.clear();
+                            for (uint32_t i = 0; i < model.pins.size(); ++i)
+                                ids.insert(i);
+                        }
+                        {
+                            std::lock_guard<std::mutex> lock(pinSubMutex);
+                            pinSub.active = true;
+                            pinSub.all = all;
+                            pinSub.pins = ids;
+                            pinSub.mode = mode;
+                            pinSub.intervalMs = static_cast<uint32_t>(interval);
+                            pinSub.pending.clear();
+                            pinSub.lastFlush = std::chrono::steady_clock::now();
+                        }
+                        result.set("subscribed", static_cast<uint64_t>(ids.size()));
+                        result.set("mode", mode);
+                        result.set("interval_ms", interval);
+                        emitPinSnapshot(ids);
+                    }
+                }
+            }
+        } else if (cmd == "pin.unsubscribe") {
+            {
+                std::lock_guard<std::mutex> lock(pinSubMutex);
+                pinSub.active = false;
+                pinSub.pending.clear();
+                pinSub.pins.clear();
+            }
+            result.set("ok", true);
+        } else if (cmd == "device.list") {
+            auto arr = json::Value::array();
+            for (const auto& d : devices) arr.push(deviceInfoJson(*d));
+            result.set("devices", arr);
+        } else if (cmd == "device.describe") {
+            const std::string target =
+                req.getString("device_name", req.getString("name", ""));
+            DeviceCtx* found = nullptr;
+            for (auto& d : devices) {
+                if (d->name == target) {
+                    found = d.get();
+                    break;
+                }
+            }
+            if (!found) {
+                error = "未知设备: " + target;
+                errorCode = "unknown_device";
+            } else {
+                result = deviceDescribeResult(*found);
+            }
+        } else if (cmd == "device.snapshot") {
+            auto arr = json::Value::array();
+            for (const auto& d : devices) arr.push(deviceStateJson(*d));
+            result.set("devices", arr);
+        } else if (cmd == "device.state") {
+            const std::string target = req.getString("device_name", "");
+            if (!target.empty()) {
+                DeviceCtx* found = nullptr;
+                for (auto& d : devices) {
+                    if (d->name == target) {
+                        found = d.get();
+                        break;
+                    }
+                }
+                if (!found) {
+                    error = "未知设备: " + target;
+                    errorCode = "unknown_device";
+                } else {
+                    result = deviceStateJson(*found);
+                }
+            } else {
+                auto arr = json::Value::array();
+                for (const auto& d : devices) arr.push(deviceStateJson(*d));
+                result.set("devices", arr);
+            }
+        } else if (cmd == "mem.regions") {
+            auto arr = json::Value::array();
+            for (const auto& r : model.regions) {
+                auto obj = json::Value::object();
+                obj.set("name", r.name);
+                obj.set("space", r.space);
+                obj.set("base", static_cast<uint64_t>(r.base));
+                obj.set("size", static_cast<uint64_t>(r.size));
+                obj.set("mmio", r.is_mmio);
+                arr.push(obj);
+            }
+            result.set("regions", arr);
+        } else if (cmd == "breakpoint.enable" ||
+                   cmd == "breakpoint.disable") {
+            const int64_t addr = readAddr(req, "addr");
+            if (addr < 0 ||
+                bpEnable(static_cast<uint32_t>(addr),
+                         cmd == "breakpoint.enable") != 0) {
+                error = "断点不存在";
+                errorCode = "not_found";
+            } else {
+                mcuStatus(result);
+            }
         } else if (cmd == "pause") {
             if (mcuPause() != 0) error = "pause 超时";
             else mcuStatus(result);
@@ -1089,6 +1709,7 @@ struct Host::Impl {
             }
         } else if (cmd == "breakpoint.clear_all") {
             breakpoints.clear();
+            bpHitCount.clear();
             applyBreakpoints();
             mcuStatus(result);
         } else if (cmd == "breakpoint.list") {
@@ -1124,6 +1745,39 @@ struct Host::Impl {
                                        space, static_cast<uint32_t>(addr),
                                        static_cast<uint8_t>(width)));
             }
+        } else if (cmd == "mem.read") {
+            const std::string space = req.getString("space", "");
+            const int64_t addr = readAddr(req, "addr");
+            const int64_t length = req.getInt("length", 0);
+            if (addr < 0 || length <= 0) {
+                error = "需要 space/addr/length";
+                errorCode = "out_of_range";
+            } else {
+                std::string hex;
+                uint32_t actual = 0;
+                bool inRange = false;
+                std::string dumpError;
+                std::string dumpCode;
+                if (mcuDump(space, static_cast<uint32_t>(addr),
+                            static_cast<uint32_t>(length), hex, actual,
+                            inRange, dumpError, dumpCode) != 0) {
+                    error = dumpError;
+                    errorCode = dumpCode;
+                } else {
+                    result.set("space", space);
+                    result.set("addr", static_cast<uint64_t>(addr));
+                    result.set("requested_length",
+                               static_cast<uint64_t>(length));
+                    result.set("length", static_cast<uint64_t>(actual));
+                    result.set("actual_length",
+                               static_cast<uint64_t>(actual));
+                    result.set("truncated",
+                               static_cast<bool>(inRange && actual < length));
+                    result.set("in_range", inRange);
+                    result.set("encoding", "hex");
+                    result.set("data", hex);
+                }
+            }
         } else if (cmd == "irq.inject") {
             const int64_t irq = req.getInt("number", -1);
             if (irq < 0 || raiseIrq(static_cast<uint32_t>(irq)) != 0)
@@ -1137,7 +1791,8 @@ struct Host::Impl {
             error = "未知 mcu 命令: " + cmd;
         }
 
-        response = makeResponse(req, error.empty(), result, error);
+        response = makeResponse(req, error.empty(), result, error, errorCode,
+                                "mcu");
         return error.empty();
     }
 
@@ -1169,9 +1824,18 @@ struct Host::Impl {
         }
         if (!target) {
             auto response = makeResponse(req, false, json::Value::object(),
-                                         "未知设备: " + device);
+                                         "未知设备: " + device, "unknown_device",
+                                         device);
             writeJsonLine(response);
             return false;
+        }
+
+        const std::string cmd = req.getString("cmd", "");
+        if (cmd == "describe") {
+            auto response = makeResponse(req, true, deviceDescribeResult(*target),
+                                         "", "error", device);
+            writeJsonLine(response);
+            return true;
         }
 
         std::string payload = "{}";
@@ -1181,17 +1845,22 @@ struct Host::Impl {
         HpmDebugEvent ev{};
         ev.type = HPM_DEBUG_EVENT_JSON;
         ev.u.json = payload.c_str();
+        int rc = 0;
         {
             std::lock_guard<std::recursive_mutex> pluginLock(pluginMutex);
             if (target->ctx && target->lib->event) {
-                target->lib->event(target->ctx, &ev);
+                rc = target->lib->event(target->ctx, &ev);
             }
         }
         if (req.has("id")) {
-            auto response = makeResponse(req, true, json::Value::object());
+            auto result = json::Value::object();
+            result.set("applied", rc == 0);
+            auto response = makeResponse(
+                req, rc == 0, result,
+                rc == 0 ? "" : "设备拒绝输入", "device_error", device);
             writeJsonLine(response);
         }
-        return true;
+        return rc == 0;
     }
 
     void jsonLoop() {
@@ -1232,7 +1901,8 @@ struct Host::Impl {
     void cliHelp() {
         writeLine("status | run | pause | step [n] | reset");
         writeLine("bp <addr> | delete <addr> | bl");
-        writeLine("pins | regs | devices | send <device> <json> | quit");
+        writeLine("pins | regs | mem <space> <addr> <len>");
+        writeLine("devices | send <device> <json> | quit");
     }
 
     void cliLoop() {
@@ -1284,14 +1954,46 @@ struct Host::Impl {
                     writeLine("断点已删除");
                 }
             } else if (cmd == "bl") {
-                for (uint32_t a : breakpoints)
-                    writeLine("0x" + std::to_string(a));
+                for (const auto& [a, enabled] : breakpoints) {
+                    writeLine("0x" + std::to_string(a) +
+                              (enabled ? "" : " (disabled)"));
+                }
             } else if (cmd == "pins") {
                 printPins();
             } else if (cmd == "regs") {
                 printRegs();
             } else if (cmd == "devices") {
                 printDevices();
+            } else if (cmd == "mem") {
+                std::string space;
+                std::string addrStr;
+                std::string lenStr;
+                ss >> space >> addrStr >> lenStr;
+                if (space.empty() || addrStr.empty() || lenStr.empty()) {
+                    writeLine("用法: mem <space> <addr> <len>");
+                    continue;
+                }
+                const uint32_t addr = static_cast<uint32_t>(
+                    std::strtoul(addrStr.c_str(), nullptr, 0));
+                const uint32_t len = static_cast<uint32_t>(
+                    std::strtoul(lenStr.c_str(), nullptr, 0));
+                std::string hex;
+                uint32_t actual = 0;
+                bool inRange = false;
+                std::string error;
+                std::string errorCode;
+                if (mcuDump(space, addr, len, hex, actual, inRange, error,
+                            errorCode) != 0) {
+                    writeLine("dump 失败 [" + errorCode + "]: " + error);
+                } else if (!inRange) {
+                    writeLine("地址不在空间 " + space + " 内");
+                } else {
+                    writeLine(space + ":" + addrStr + " (" +
+                              std::to_string(actual) + " bytes)");
+                    for (size_t i = 0; i < hex.size(); i += 32) {
+                        writeLine(hex.substr(i, 32));
+                    }
+                }
             } else if (cmd == "send") {
                 std::string device;
                 ss >> device;
@@ -1374,6 +2076,8 @@ struct Host::Impl {
         if (!createPlugins()) return 1;
 
         ready = true;
+        stopReason = "pause";
+        stopAddr = readPc();
         eventThread = std::thread([this] { eventLoop(); });
 
         if (opts.jsonMode) {
