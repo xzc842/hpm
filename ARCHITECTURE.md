@@ -148,3 +148,30 @@ void hpm_init_all(void) {
 4. 拷贝芯片驱动（全局一份）
 
 生成 `driver.h`（芯片 + 设备 API）、`driver.c`（`hpm_init_all`）、`Makefile`。
+
+---
+
+## 调试（mcus 模拟器）
+
+`hpm debug` 把已编译固件交给 `mcus` 模拟器执行：
+
+```
+hpm build → build/firmware.hex|ihx|bin
+    ↓
+hpm debug --model <chip.json> --config <mcus.toml>
+    ↓ 检查 driver/、build/、固件
+    ↓ 按模型 arch 选 ISA 动态库（8051 → libmcus_isa_8051.so）
+    ↓ fork/exec
+mcus --isa <isa.so> --model ... --firmware ... --config ...
+```
+
+- mcus 源码通过 git submodule `debug/mcus` 引入，由 hpm 的 CMake 一起编译：
+  `build/bin/mcus`、`build/lib/libmcus_core.so`、`build/lib/libmcus_isa_8051.so`。
+- ISA 是外部动态库插件，必须导出 `mcus_isa_abi_version` / `mcus_isa_arch` /
+  `mcus_isa_create` / `mcus_isa_destroy`（见 mcus 的 `include/mcus/isa_plugin.h`）。
+- 固件支持裸二进制 `.bin` 和 Intel HEX `.hex`/`.ihx`。
+- mcus 使用统一 `DebugEventStream`（MMIO / PIN / BUS / IRQ），支持 attach 模式；
+  GPIO 只在变化时发事件，不轮询。
+- `hpm debug` 在宿主机编译驱动包里的 `debug/debug.c` 为 `.so`，按用户设备加载；
+  中间设备不虚拟化，只用于展开绑定。
+- 默认启动即暂停；CLI 交互或 `--json` JSON Lines 协议控制 mcu 和设备插件。

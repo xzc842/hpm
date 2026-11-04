@@ -24,11 +24,13 @@ add_executable(hpm
     src/commands/build_cmd.cpp
     src/commands/flash_cmd.cpp
     src/commands/clean_cmd.cpp
+    src/commands/debug_cmd.cpp
     src/commands/dev_export_cmd.cpp
 )
 
 target_link_libraries(hpm
     PRIVATE
         hpm_core
+        hpm_debug_host
         CLI11::CLI11
 )

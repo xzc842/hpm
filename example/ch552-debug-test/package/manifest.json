@@ -1,0 +1,44 @@
+{
+  "name": "gpio_led",
+  "version": "1.0.0",
+  "description": "Single GPIO LED driver",
+  "license": "MIT",
+  "toolchain": [
+    "sdcc"
+  ],
+  "config": {},
+  "requires": {
+    "pin": {
+      "type": "gpio_out",
+      "methods": [
+        "init",
+        "write",
+        "read"
+      ]
+    }
+  },
+  "provides": {
+    "methods": [
+      {
+        "name": "init",
+        "return": "int",
+        "params": []
+      },
+      {
+        "name": "on",
+        "return": "void",
+        "params": []
+      },
+      {
+        "name": "off",
+        "return": "void",
+        "params": []
+      },
+      {
+        "name": "toggle",
+        "return": "void",
+        "params": []
+      }
+    ]
+  }
+}

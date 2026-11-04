@@ -121,6 +121,44 @@ Result<ChipBuildConfig> loadBuild(const json::Value& obj) {
     return bc;
 }
 
+Result<ProvidedMethod> loadProvidedMethod(const json::Value& v,
+                                          const std::string& ctx) {
+    if (v.isString()) {
+        auto s = v.asString();
+        if (!s) return s.error();
+        ProvidedMethod m;
+        m.name = *s;
+        return m;
+    }
+    if (!v.isObject()) {
+        return Error(ErrorCode::InvalidField, ctx + " 应为字符串或对象");
+    }
+    FieldReader r(v, ctx);
+    ProvidedMethod m;
+    auto name = r.requireString("name");
+    if (!name) return name.error();
+    m.name = *name;
+    m.returnType = r.optString("return", "int");
+
+    auto paramsJson = r.optArray("params");
+    if (!paramsJson) return paramsJson.error();
+    for (size_t i = 0; i < paramsJson->size(); ++i) {
+        auto p = (*paramsJson)[i];
+        if (!p.isObject()) {
+            return Error(ErrorCode::InvalidField,
+                         ctx + ".params[" + std::to_string(i) + "] 必须是对象");
+        }
+        FieldReader pr(p, ctx + ".params[" + std::to_string(i) + "]");
+        MethodParam mp;
+        auto type = pr.requireString("type");
+        if (!type) return type.error();
+        mp.type = *type;
+        mp.name = pr.optString("name");
+        m.params.push_back(std::move(mp));
+    }
+    return m;
+}
+
 } // namespace
 
 Result<Chip> loadChip(const json::Value& json) {
@@ -160,6 +198,24 @@ Result<Chip> loadChip(const json::Value& json) {
         auto bc = loadBuild(*bcJson);
         if (!bc) return bc.error();
         chip.build = std::move(*bc);
+    }
+
+    // provides（可选）：芯片驱动提供的方法，如 init
+    auto provJson = r.optObject("provides");
+    if (provJson && provJson->isObject()) {
+        auto methodsJson = provJson->get("methods");
+        if (methodsJson && methodsJson->isArray()) {
+            auto n = methodsJson->size();
+            if (!n) return n.error();
+            for (size_t i = 0; i < *n; ++i) {
+                auto item = methodsJson->at(i);
+                if (!item) return item.error();
+                auto m = loadProvidedMethod(
+                    *item, "provides.methods[" + std::to_string(i) + "]");
+                if (!m) return m.error();
+                chip.provides.push_back(std::move(*m));
+            }
+        }
     }
 
     auto pinsJson = r.requireObject("pins");

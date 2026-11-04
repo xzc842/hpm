@@ -31,6 +31,9 @@ namespace hpm::cli {
 namespace {
 
 bool g_color = true;
+bool g_json_mode = false;
+
+std::ostream& out() { return g_json_mode ? std::cerr : std::cout; }
 
 const char* c_reset  = "\033[0m";
 const char* c_red    = "\033[31m";
@@ -49,16 +52,20 @@ void Output::setColor(bool on) {
     g_color = on && ISATTY;
 }
 
+void Output::setJsonMode(bool on) {
+    g_json_mode = on;
+}
+
 void Output::info(const std::string& msg) {
-    std::cout << col(c_blue) << "info" << col(c_reset) << " " << msg << "\n";
+    out() << col(c_blue) << "info" << col(c_reset) << " " << msg << "\n";
 }
 
 void Output::success(const std::string& msg) {
-    std::cout << col(c_green) << "ok" << col(c_reset) << " " << msg << "\n";
+    out() << col(c_green) << "ok" << col(c_reset) << " " << msg << "\n";
 }
 
 void Output::warn(const std::string& msg) {
-    std::cout << col(c_yellow) << "warn" << col(c_reset) << " " << msg << "\n";
+    out() << col(c_yellow) << "warn" << col(c_reset) << " " << msg << "\n";
 }
 
 void Output::error(const std::string& msg) {
@@ -66,11 +73,11 @@ void Output::error(const std::string& msg) {
 }
 
 void Output::step(const std::string& msg) {
-    std::cout << col(c_blue) << "==>" << col(c_reset) << " " << msg << "\n";
+    out() << col(c_blue) << "==>" << col(c_reset) << " " << msg << "\n";
 }
 
 void Output::detail(const std::string& msg) {
-    std::cout << "    " << col(c_gray) << msg << col(c_reset) << "\n";
+    out() << "    " << col(c_gray) << msg << col(c_reset) << "\n";
 }
 
 } // namespace hpm::cli

@@ -1,0 +1,10 @@
+.work/
+project/build/
+*.asm
+*.lst
+*.rel
+*.sym
+*.rst
+*.lk
+*.map
+*.mem

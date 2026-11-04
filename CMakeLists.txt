@@ -98,3 +98,4 @@ if(HPM_BUILD_TESTS)
 endif()
 
 add_subdirectory(dev)
+add_subdirectory(debug)

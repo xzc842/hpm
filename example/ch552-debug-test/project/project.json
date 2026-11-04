@@ -1,0 +1,9 @@
+{
+  "devices": {
+    "led": {
+      "driver": "gpio",
+      "pin": "P1_1"
+    }
+  },
+  "mcu": "ch552g"
+}

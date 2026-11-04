@@ -1,0 +1,10 @@
+{
+  "intermediate_devices": {},
+  "user_devices": {
+    "led": {
+      "driver": "gpio-*",
+      "pin": "P1_1",
+      "version": "1.0.0"
+    }
+  }
+}

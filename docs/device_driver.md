@@ -217,7 +217,27 @@ int HPM_FN(read)(unsigned char* buf, unsigned char len) {
 
 用宏（`cs`、`bus`），让工具注入。
 
-**5. C 预处理器只匹配独立 token**
+**5. 资源 key 不要和 `DEVICE_NAME` 相同**
+
+例如设备名是 `led`，资源 key 也写 `led`：
+
+```json
+"requires": { "led": { "type": "gpio_out" } }
+```
+
+生成 `hpm_dev.h` 后：
+
+```c
+#define DEVICE_NAME  led
+#define led          hpm_pin_P1_1
+```
+
+`HPM_FN(init)` 会先展开 `DEVICE_NAME`，再被 `led` 宏二次展开成
+`hpm_pin_P1_1_init`，函数名就错了。
+
+**资源 key 用 `pin`、`cs`、`rst` 这类名字，不要和设备名重复。**
+
+**6. C 预处理器只匹配独立 token**
 
 `cs` 宏不会匹配 `cs_init` 里的 `cs`。必须用 `HPM_CALL(cs, init)`。
 

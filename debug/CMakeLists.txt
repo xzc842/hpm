@@ -12,21 +12,101 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# debug/CMakeLists.txt
+#
+# mcus 源码通过 git submodule debug/mcus 引入，作为 hpm 的一部分编译：
+#   build/bin/mcus
+#   build/lib/libmcus_core.so
+#   build/lib/libmcus_isa_8051.so
 
-add_executable(hpm-debug
-    src/main.cpp
+if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/mcus/src/main.cpp)
+    message(FATAL_ERROR
+        "debug/mcus 不存在。请先初始化子模块：\n"
+        "  git submodule update --init --recursive")
+endif()
+
+include(FetchContent)
+
+FetchContent_Declare(
+    toml11
+    GIT_REPOSITORY https://github.com/ToruNiina/toml11.git
+    GIT_TAG        v4.0.2
 )
-
-target_link_libraries(hpm-debug PRIVATE hpm_core)
-
-
-target_include_directories(hpm-debug PRIVATE
-    ${CMAKE_SOURCE_DIR}/third_party/httplib
-)
-
+FetchContent_MakeAvailable(toml11)
 
 find_package(Threads REQUIRED)
-target_link_libraries(hpm-debug PRIVATE Threads::Threads)
 
+set(MCUS_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/mcus)
 
-install(TARGETS hpm-debug DESTINATION bin)
+# 模拟器核心：不含 8051 ISA
+add_library(mcus_core SHARED
+    ${MCUS_SOURCE_DIR}/src/model.cpp
+    ${MCUS_SOURCE_DIR}/src/shared_memory.cpp
+    ${MCUS_SOURCE_DIR}/src/event_stream.cpp
+    ${MCUS_SOURCE_DIR}/src/cpu.cpp
+    ${MCUS_SOURCE_DIR}/src/simulator.cpp
+    ${MCUS_SOURCE_DIR}/src/config.cpp
+    ${MCUS_SOURCE_DIR}/src/isa_base.cpp
+    ${MCUS_SOURCE_DIR}/src/isa_registry.cpp
+    ${MCUS_SOURCE_DIR}/src/firmware.cpp
+    ${MCUS_SOURCE_DIR}/src/log.cpp
+)
+
+target_include_directories(mcus_core
+    PUBLIC
+        ${MCUS_SOURCE_DIR}/include
+)
+
+target_link_libraries(mcus_core
+    PUBLIC
+        Threads::Threads
+        nlohmann_json::nlohmann_json
+        toml11::toml11
+)
+
+target_compile_options(mcus_core PRIVATE -Wall -Wextra -Wpedantic)
+
+# 8051 指令集：外部 ISA 动态库
+add_library(mcus_isa_8051 SHARED
+    ${MCUS_SOURCE_DIR}/src/isa_8051.cpp
+)
+
+target_link_libraries(mcus_isa_8051 PRIVATE mcus_core)
+
+target_compile_options(mcus_isa_8051 PRIVATE -Wall -Wextra -Wpedantic)
+
+set_target_properties(mcus_isa_8051 PROPERTIES
+    INSTALL_RPATH "$ORIGIN"
+)
+
+# 模拟器可执行文件
+add_executable(mcus ${MCUS_SOURCE_DIR}/src/main.cpp)
+
+target_link_libraries(mcus
+    PRIVATE
+        mcus_core
+        ${CMAKE_DL_LIBS}
+)
+
+set_target_properties(mcus PROPERTIES
+    BUILD_RPATH "$ORIGIN/../lib"
+    INSTALL_RPATH "$ORIGIN/../lib"
+)
+
+# 调试工具：打印共享内存
+add_executable(dump_shm ${MCUS_SOURCE_DIR}/tools/dump_shm.cpp)
+target_link_libraries(dump_shm PRIVATE mcus_core)
+
+install(TARGETS mcus mcus_core mcus_isa_8051 dump_shm
+    RUNTIME DESTINATION bin
+    LIBRARY DESTINATION lib
+)
+
+# 插件开发头文件：拷贝到 build/include，供驱动 debug 插件编译时 -I
+file(COPY ${CMAKE_SOURCE_DIR}/core/include/hpm/debug/plugin.h
+     DESTINATION ${CMAKE_BINARY_DIR}/include/hpm/debug)
+
+add_subdirectory(host)
+
+install(FILES ${CMAKE_SOURCE_DIR}/core/include/hpm/debug/plugin.h
+        DESTINATION include/hpm/debug)
