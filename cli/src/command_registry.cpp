@@ -17,6 +17,7 @@
 
 #include "commands/build_cmd.h"
 #include "commands/clean_cmd.h"
+#include "commands/debug_cmd.h"
 #include "commands/dev_export_cmd.h"
 #include "commands/flash_cmd.h"
 #include "commands/init_cmd.h"
@@ -30,6 +31,7 @@ CommandRegistry::CommandRegistry() {
     commands_.push_back(std::make_unique<BuildCmd>());
     commands_.push_back(std::make_unique<FlashCmd>());
     commands_.push_back(std::make_unique<CleanCmd>());
+    commands_.push_back(std::make_unique<DebugCmd>());
     commands_.push_back(std::make_unique<DevExportCmd>());
 }
 

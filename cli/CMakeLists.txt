@@ -24,6 +24,7 @@ add_executable(hpm
     src/commands/build_cmd.cpp
     src/commands/flash_cmd.cpp
     src/commands/clean_cmd.cpp
+    src/commands/debug_cmd.cpp
     src/commands/dev_export_cmd.cpp
 )
 

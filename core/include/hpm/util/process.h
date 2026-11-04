@@ -19,6 +19,7 @@
 
 #include <hpm/result.h>
 
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -30,5 +31,21 @@ namespace hpm::util {
 Status runProcess(const std::string& program,
                   const std::vector<std::string>& args,
                   bool verbose = false);
+
+// 子进程退出信息
+struct ProcessExit {
+    int  code = 0;        // WEXITSTATUS
+    bool signaled = false; // 是否被信号终止
+    int  signal = 0;      // 终止信号
+};
+
+// 在当前终端启动子进程（stdio 继承），等待其退出。
+//
+// Linux 下 fork/exec：父进程忽略 SIGINT/SIGQUIT，Ctrl+C 只终止子进程，
+// 父进程在 waitpid 返回后恢复信号处理。workDir 非空时子进程切换工作目录。
+Result<ProcessExit> runProcessInherit(
+    const std::string& program,
+    const std::vector<std::string>& args,
+    const std::filesystem::path& workDir = {});
 
 } // namespace hpm::util

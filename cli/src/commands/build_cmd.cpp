@@ -21,6 +21,9 @@
 #include <hpm/util/process.h>
 
 #include <filesystem>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace hpm::cli {
 
@@ -47,7 +50,18 @@ int BuildCmd::run(CmdContext& ctx) {
     }
 
     Output::success("编译完成");
-    Output::detail("产物: " + (ctx.buildDir() / "firmware.elf").string());
+
+    const std::vector<std::pair<std::string, std::string>> artifacts = {
+        {"firmware.hex", "HEX"},
+        {"firmware.bin", "BIN"},
+        {"firmware.elf", "ELF"},
+    };
+    for (const auto& [file, kind] : artifacts) {
+        auto path = ctx.buildDir() / file;
+        if (fs::exists(path)) {
+            Output::detail("产物: " + path.string() + " (" + kind + ")");
+        }
+    }
     return 0;
 }
 

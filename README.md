@@ -147,6 +147,21 @@ hpm build
 hpm flash
 ```
 
+### 5. 在模拟器中运行
+
+`hpm debug` 会先检查固件是否已编译，然后启动随 HPM 一起构建的 mcus 模拟器。
+芯片模型和模拟器配置文件由用户在命令行指定：
+
+```bash
+hpm debug \
+  --model debug/mcus/models/ch552g.json \
+  --config debug/mcus/config/example.toml
+```
+
+默认使用 `build/` 下最新的 `firmware.hex` / `firmware.ihx` / `firmware.bin`；
+ISA 动态库按模型的 `arch` 字段自动推导（如 `8051` → `build/lib/libmcus_isa_8051.so`）。
+`--dry-run` 可以只打印最终启动命令。
+
 > 更多示例见[example](example/)
 ---
 
@@ -160,6 +175,7 @@ hpm flash
 | `hpm sync [--dry-run]` | 拉取依赖、解析、生成 `driver/` |
 | `hpm build` | 编译固件到 `build/` |
 | `hpm flash` | 烧录固件 |
+| `hpm debug --model <model.json> --config <config.toml>` | 在 mcus 模拟器中运行已编译固件 |
 | `hpm clean` | 删除 `build/` |
 | `hpm dev --export` | 生成 `hpm.h`（底层 API） |
 
