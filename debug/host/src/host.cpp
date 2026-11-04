@@ -294,6 +294,21 @@ struct Host::Impl {
             return;
         }
 
+        // 设备一次性事件
+        if (parsed->has("$event")) {
+            auto event = parsed->get("$event");
+            if (opts.jsonMode && !dev.creating && event) {
+                auto out = json::Value::object();
+                out.set("device", dev.name);
+                out.set("type", "event");
+                out.set("event", "device.event");
+                out.set("time", static_cast<uint64_t>(readVirtualTime()));
+                out.set("data", *event);
+                writeJsonLine(out);
+            }
+            return;
+        }
+
         // 设备错误
         if (parsed->has("$error")) {
             auto err = parsed->get("$error");
@@ -572,12 +587,14 @@ struct Host::Impl {
             if (!dm || !(dm->version == version)) continue;
 
             const std::string dirName = entry.path().filename().string();
+            const bool dirMatches =
+                dirName == name ||
+                dirName.rfind(name + "-", 0) == 0;
             const bool nameMatches =
                 dm->name == name ||
                 name.rfind(dm->name, 0) == 0 ||
-                dirName.rfind(dm->name, 0) == 0 ||
                 dm->name.rfind(name, 0) == 0;
-            if (nameMatches) return entry.path();
+            if (nameMatches || dirMatches) return entry.path();
         }
         return std::nullopt;
     }
@@ -774,14 +791,17 @@ struct Host::Impl {
                 ctx->configKv.push_back(
                     HpmDebugKv{key.c_str(), value.c_str()});
             }
-            for (const auto& [key, value] : ctx->bindings) {
-                ctx->bindingKv.push_back(
-                    HpmDebugKv{key.c_str(), value.c_str()});
+            for (auto& [key, value] : ctx->bindings) {
                 const uint32_t id = pinIdFor(value);
                 if (id != UINT32_MAX) {
+                    const std::string canon = canonicalPin(value);
+                    value = canonicalToPin.count(canon) ? canonicalToPin[canon]
+                                                        : canon;
                     ctx->pinIds.push_back(id);
-                    ctx->pinNames.insert(canonicalPin(value));
+                    ctx->pinNames.insert(canon);
                 }
+                ctx->bindingKv.push_back(
+                    HpmDebugKv{key.c_str(), value.c_str()});
             }
             if (opts.verbose) {
                 writeErr("debug device " + ctx->name + " bindings=" +

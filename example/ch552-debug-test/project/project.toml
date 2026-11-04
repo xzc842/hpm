@@ -1,3 +1,5 @@
 mcu = "ch552g"
 
-[devices]
+[devices.led]
+driver = "gpio"
+pin = "P1_1"

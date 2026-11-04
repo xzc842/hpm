@@ -345,10 +345,14 @@ int hpm_debug_event(void* ctx, const HpmDebugEvent* ev) {
 ## 9. 调试
 
 ```bash
-hpm debug --model <model.json> --config <config.toml>
-hpm debug --json --model ... --config ...
+hpm debug --isa build/lib/libmcus_isa_8051.so \
+  --model <model.json> --config <config.toml>
+
+hpm debug --json --isa build/lib/libmcus_isa_8051.so \
+  --model ... --config ...
 ```
 
+- `--isa` 可显式指定 ISA 动态库；省略时按模型 `arch` 推导。
 - 缺少 `debug/debug.c` 默认直接报错。
 - `--allow-missing-debug` 可跳过。
 - `--host-cc` 指定宿主机编译器。

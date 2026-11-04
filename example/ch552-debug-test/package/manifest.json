@@ -1,10 +1,44 @@
 {
-  "name": "test-led-ch552",
+  "name": "gpio_led",
   "version": "1.0.0",
-  "description": "HPM debug 示例：把 P1.0 当作 LED 虚拟设备",
+  "description": "Single GPIO LED driver",
   "license": "MIT",
-  "toolchain": [],
+  "toolchain": [
+    "sdcc"
+  ],
   "config": {},
-  "requires": {},
-  "provides": { "methods": [] }
+  "requires": {
+    "pin": {
+      "type": "gpio_out",
+      "methods": [
+        "init",
+        "write",
+        "read"
+      ]
+    }
+  },
+  "provides": {
+    "methods": [
+      {
+        "name": "init",
+        "return": "int",
+        "params": []
+      },
+      {
+        "name": "on",
+        "return": "void",
+        "params": []
+      },
+      {
+        "name": "off",
+        "return": "void",
+        "params": []
+      },
+      {
+        "name": "toggle",
+        "return": "void",
+        "params": []
+      }
+    ]
+  }
 }
