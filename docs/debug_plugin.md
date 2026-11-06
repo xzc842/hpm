@@ -1,6 +1,6 @@
 # HPM 设备虚拟化插件开发规范
 
-> 适用版本：`hpm-debug/2`、插件 ABI `1`
+> 适用版本：`hpm-debug/2`、插件 ABI `2`
 
 驱动包可以在根目录下提供 `debug/`，让设备在 `hpm debug` 中被虚拟化。
 `hpm sync` 生成 `driver/` 时**不会**复制 `debug/`，它只用于调试会话。
@@ -158,7 +158,27 @@ typedef struct {
 } HpmDebugBusEvent;
 ```
 
-> 总线引擎当前仍在接入中；ABI 已预留，后续阶段启用。
+总线事件会广播给所有设备插件，插件按 `bus_id`/`kind` 过滤。
+
+- `UartTx` / `SpiXfer` 等 `ToHost` 事件由 mcus 发到 host；
+- 插件用 `bus_send` 把 `UartRx`、SPI MISO 等 `ToMcu` 事件写回 mcus；
+- SPI 主机在等 MISO 时，如果插件没有同步回复，host 会自动回 `0xFF`，避免冻结到超时。
+
+### 5.4 USB
+
+```c
+typedef struct {
+    uint64_t time;
+    uint32_t xfer_id;
+    uint16_t len;
+    uint8_t ep;
+    uint8_t token;       /* Setup/In/Out/Reset/... */
+    uint8_t handshake;   /* None/Ack/Nak/Stall */
+    const uint8_t* data; /* 最多 64 字节 */
+} HpmDebugUsbEvent;
+```
+
+插件用 `usb_send` 回复 USB `In` 包或注入 `Setup/Out/Reset`。
 
 ### 5.4 JSON
 
@@ -195,6 +215,14 @@ typedef struct HpmDebugHostApi {
 
     int (*bus_write)(void* host, uint32_t xfer_id,
                      const uint8_t* data, size_t len, uint32_t flags);
+
+    int (*bus_send)(void* host, uint32_t bus_id, uint32_t xfer_id,
+                    uint8_t kind, uint8_t direction,
+                    const uint8_t* data, size_t len, uint8_t flags);
+
+    int (*usb_send)(void* host, uint32_t xfer_id, uint8_t ep,
+                    uint8_t token, uint8_t handshake,
+                    const uint8_t* data, size_t len);
 } HpmDebugHostApi;
 ```
 
@@ -231,7 +259,38 @@ typedef struct HpmDebugHostApi {
 
 ### `bus_write`
 
-回应总线事务，`xfer_id` 与收到的 BUS 事件对应。
+SPI 响应快捷方式，`xfer_id` 与收到的 `SpiXfer` 事件对应。
+
+### `bus_send`
+
+通用总线发送：
+
+```c
+/* UART RX：把收到的字节注入 mcus */
+const uint8_t data[] = {'O', 'K'};
+api->bus_send(api->host, 0, 0,
+              /* UartRx */ 6,
+              /* ToMcu */ 1,
+              data, sizeof(data), 0);
+
+/* SPI MISO 响应 */
+api->bus_send(api->host, 0, xfer_id,
+              /* SpiXfer */ 0,
+              /* ToMcu */ 1,
+              miso, 1, 0);
+```
+
+`bus_id` 对应模型里的 `uarts[i]` / `spis[i]`。
+
+### `usb_send`
+
+回复 USB `In` 请求，或注入 `Setup`/`Out`/`Reset` 包：
+
+```c
+api->usb_send(api->host, xfer_id, ep,
+              /* token */ 1, /* handshake */ 1,
+              data, len);
+```
 
 ---
 

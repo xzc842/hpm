@@ -23,12 +23,19 @@ add_executable(hpm_tests
     unit/test_resolver.cpp
     unit/test_generator.cpp
     unit/test_toolchain.cpp
+    unit/test_bus_router.cpp
+    ../debug/host/src/bus_router.cpp
 )
 
 target_link_libraries(hpm_tests
     PRIVATE
         hpm_core
+        mcus_core
         Catch2::Catch2WithMain
+)
+
+target_include_directories(hpm_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/debug/host/src
 )
 
 include(Catch)
