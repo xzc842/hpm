@@ -21,10 +21,22 @@
 // HPM 全局配置
 // ============================================================
 
-// ── 官方公钥 ──
-// 官方公钥地址
-#define HPM_OFFICIAL_PUB_URL \
-    "https://raw.githubusercontent.com/AstercoreTeam/hpm-repo/main/official.pub"
+// ── 根证书 / 官方证书 ──
+// 根 CA 证书（PEM）固定在客户端中，根私钥不进入仓库。
+#define HPM_ROOT_CA_PEM R"PEM(-----BEGIN CERTIFICATE-----
+MIIBcDCCASKgAwIBAgIUbxJStO+IYuUjGZ2GqCKWHabO2a4wBQYDK2VwMCQxFDAS
+BgNVBAMMC0hQTSBSb290IENBMQwwCgYDVQQKDANIUE0wHhcNMjYxMTA2MTExMDM3
+WhcNNDYxMTAxMTExMDM3WjAkMRQwEgYDVQQDDAtIUE0gUm9vdCBDQTEMMAoGA1UE
+CgwDSFBNMCowBQYDK2VwAyEAxtoW0XMlNVBZWUco9jk2zH7FyigIbHVpPypatiOF
+EBSjZjBkMBIGA1UdEwEB/wQIMAYBAf8CAQIwDgYDVR0PAQH/BAQDAgEGMB0GA1Ud
+DgQWBBS9zLfXrrDF6+fT36E+3FTx7VRHSjAfBgNVHSMEGDAWgBS9zLfXrrDF6+fT
+36E+3FTx7VRHSjAFBgMrZXADQQDLg8qbPEDKmB6i/Wcr7f1e57K9sWEVjw0QQKL/
+OL5NFoAb12sRoQmdCgGrPIxf9iVQZlxL7uBFOvL5LF46jREA
+-----END CERTIFICATE-----
+)PEM"
+
+#define HPM_OFFICIAL_CERT_URL \
+    "https://raw.githubusercontent.com/AstercoreTeam/hpm-repo/main/official.crt"
 
 // ── 默认 Registry ──
 // 默认索引地址
@@ -33,7 +45,8 @@
 
 // ── 环境变量名 ──
 #define HPM_ENV_REGISTRY          "HPM_REGISTRY"
-#define HPM_ENV_OFFICIAL_PUB      "HPM_OFFICIAL_PUB"
+#define HPM_ENV_OFFICIAL_CERT     "HPM_OFFICIAL_CERT"
+#define HPM_ENV_ROOT_CA           "HPM_ROOT_CA"
 #define HPM_ENV_HOME              "HPM_HOME"
 #define HPM_ENV_SKIP_SIGNATURE    "HPM_SKIP_SIGNATURE"
 
@@ -60,8 +73,8 @@
 #define HPM_FILE_LICENSE          "LICENSE"
 #define HPM_FILE_INDEX            "index.json"
 #define HPM_FILE_INDEX_SIG        "index.json.sig"
-#define HPM_FILE_OFFICIAL_PUB     "official.pub"
-#define HPM_FILE_OFFICIAL_FP      "official.pub.fingerprint"
+#define HPM_FILE_OFFICIAL_CERT    "official.crt"
+#define HPM_FILE_OFFICIAL_CERT_FP "official.crt.fingerprint"
 
 // ── 目录名 ──
 #define HPM_DIR_DRIVER            "driver"

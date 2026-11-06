@@ -100,10 +100,12 @@ hpm/
 
 | 宏 | 作用 |
 |----|------|
-| `HPM_OFFICIAL_PUB_URL` | 官方公钥默认地址 |
+| `HPM_OFFICIAL_CERT_URL` | 官方证书默认地址 |
+| `HPM_ROOT_CA_PEM` | 内置根 CA 证书 PEM |
 | `HPM_DEFAULT_REGISTRY_URL` | 默认索引地址 |
 | `HPM_ENV_REGISTRY` | 环境变量名 `HPM_REGISTRY` |
-| `HPM_ENV_OFFICIAL_PUB` | 环境变量名 `HPM_OFFICIAL_PUB` |
+| `HPM_ENV_OFFICIAL_CERT` | 环境变量名 `HPM_OFFICIAL_CERT` |
+| `HPM_ENV_ROOT_CA` | 环境变量名 `HPM_ROOT_CA` |
 | `HPM_ENV_HOME` | 环境变量名 `HPM_HOME` |
 | `HPM_ENV_SKIP_SIGNATURE` | 环境变量名 `HPM_SKIP_SIGNATURE` |
 | `HPM_CACHE_DIR_NAME` | `.hpm` |
@@ -111,8 +113,8 @@ hpm/
 | `HPM_TARBALLS_DIR_NAME` | `cache/tarballs` |
 | `HPM_FILE_PROJECT` | `project.json` |
 | `HPM_FILE_DRIVER_STATE` | `driver.json` |
-| `HPM_FILE_OFFICIAL_PUB` | `official.pub` |
-| `HPM_FILE_OFFICIAL_FP` | `official.pub.fingerprint` |
+| `HPM_FILE_OFFICIAL_CERT` | `official.crt` |
+| `HPM_FILE_OFFICIAL_CERT_FP` | `official.crt.fingerprint` |
 | `HPM_FILE_MANIFEST` | `manifest.json` |
 | `HPM_FILE_CHIP` | `chip.json` |
 | `HPM_FILE_DRIVER_H` | `driver.h` |
@@ -693,7 +695,7 @@ driver/
 | `struct DeveloperInfo` | `pub`、`pubSig` |
 | `struct PackageVersion` | `kind`、`developer`、`url`、`sigUrl`、`sha256`、`size`、`license`、`requirements` |
 | `struct PackageInfo` | `versions` |
-| `struct Index` | `schema`、`officialPub`、`baseUrl`、`developers`、`packages` |
+| `struct Index` | `schema`、`officialCert`、`baseUrl`、`developers`、`packages` |
 | `find(name, version)` | 找某个版本 |
 | `findLatest(name)` | 找最新版本 |
 | `findLatestVersion(name)` | 找最新版本号 |
@@ -712,32 +714,33 @@ driver/
 
 | 函数 | 作用 |
 |------|------|
-| `Result<bool> verifySignature(pubKeyPem, sigFile, dataFile)` | 验证签名 |
-| `bool isValidPublicKey(pubKeyPem)` | 公钥格式检查 |
+| `Result<bool> verifySignatureWithCert(certPem, sigFile, dataFile)` | 用证书公钥验证签名 |
 | `std::string sha256File(file)` | SHA256 |
-| `std::string publicKeyFingerprint(pubKeyPem)` | 指纹（`XX:XX:XX:...`） |
 
 #### `core/src/registry/signature.cpp`
 
 **作用**：上述函数实现。
 
-#### `core/include/hpm/registry/official_key.h`
+#### `core/include/hpm/registry/certificate.h`
 
-**作用**：官方公钥管理。
+**作用**：X.509 证书加载、链验证、SAN/CA/KeyUsage/EKU 检查。
+
+#### `core/include/hpm/registry/official_cert.h`
+
+**作用**：官方证书管理。
 
 | 类型 / 方法 | 作用 |
 |------------|------|
-| `class OfficialKeyManager` | 官方公钥管理 |
-| `ensure()` | 下载 + 验证 + 指纹确认，返回公钥路径 |
-| `static officialUrl()` | 官方公钥地址（`HPM_OFFICIAL_PUB` 或硬编码） |
-| `localPath()` | 本地公钥路径 |
-| `fingerprintPath()` | 指纹路径 |
+| `class OfficialCertManager` | 官方证书管理 |
+| `ensure()` | 下载官方证书，用内置根证书验证，返回证书路径 |
+| `static officialUrl()` | 官方证书地址（`HPM_OFFICIAL_CERT` 或硬编码） |
+| `localPath()` | 本地证书路径 |
+| `fingerprintPath()` | 证书指纹路径 |
 | `download(dest)` | 下载 |
-| `promptFingerprint(fp, changed)` | 提示用户确认指纹 |
 
-#### `core/src/registry/official_key.cpp`
+#### `core/src/registry/official_cert.cpp`
 
-**作用**：`OfficialKeyManager` 实现。
+**作用**：`OfficialCertManager` 实现。
 
 #### `core/include/hpm/registry/registry_client.h`
 
@@ -755,7 +758,7 @@ driver/
 | `tarballsDir()` | `~/.hpm/cache/tarballs` |
 | `httpGet(url, progress)` | HTTP GET |
 | `httpDownload(url, dest, progress)` | HTTP 下载 |
-| `fetchAndVerifyDeveloperKey(devName)` | 下载 + 验证开发者公钥 |
+| `fetchAndVerifyDeveloperCert(domain, devName)` | 下载 + 验证开发者证书 |
 | `verifyPackageSignature(tarball, sigUrl, devName)` | 验证包签名 |
 | `extractTarball(tarball, destDir)` | 解压 tar.gz |
 
@@ -942,7 +945,7 @@ mcus 源码通过 git submodule `debug/mcus` 引入，由 `debug/CMakeLists.txt`
 
 ### `dev/src/commands/publish_cmd.h/.cpp`
 
-**作用**：`hpm-dev publish`。打包 + 签名。
+**作用**：`hpm-dev publish`。打包 + 签包，不更新/不签索引。
 
 | 方法 | 作用 |
 |------|------|
@@ -988,6 +991,26 @@ mcus 源码通过 git submodule `debug/mcus` 引入，由 `debug/CMakeLists.txt`
 ---
 
 ## 7. 数据流
+
+### `hpm search`
+
+```
+search <name>[@version]
+    ↓ RegistryConfig::load
+RegistryClient
+    ↓ fetchIndex / fetchDomainIndex
+Index
+    ↓ findLatestVersion / find
+PackageVersion
+    ↓
+终端详情 / --json
+```
+
+- 不传版本：取最新版本；
+- 传 `name@version`：只查该版本；
+- 支持 `domain/name`；
+- 没有精确包名时做前缀/子串/编辑距离相似匹配，最多列 20 个；
+- 默认验证索引证书链，`--skip-signature` 仅供开发。
 
 ### `hpm sync`
 
@@ -1051,6 +1074,8 @@ publish/<name>-<version>.tar.gz
 publish/<name>-<version>.tar.gz.sig
 ```
 
+索引由官方/域仓库管理员使用对应私钥更新和签名，`publish` 不修改 `index.json`。
+
 ---
 
 ## 8. 关键设计
@@ -1102,11 +1127,17 @@ int HPM_FN(init)(void) { ... }
 ### 8.4 信任链
 
 ```
-official.pub（根信任）
-    ↓ 验证
-index.json.sig → index.json
-    ↓ 验证
-<developer>.pub.sig → <developer>.pub
+HPM_ROOT_CA_PEM（内置根证书，离线根密钥）
+    ↓ 签发
+official.crt（官方仓库证书）
+    ↓ 验证 index.json.sig
+index.json
+    ↓ 主索引里的 domain.cert
+domain.crt（域仓库证书，官方证书签发）
+    ↓ 验证域 index.json.sig
+domain/index.json
+    ↓ 域索引里的 developer.cert
+developer.crt（开发者证书，域证书签发）
     ↓ 验证
 <package>.tar.gz.sig → <package>.tar.gz
 ```

@@ -87,9 +87,13 @@ Result<Index> parseIndex(const std::string& jsonText,
     }
 
     Index idx;
-    idx.schema = static_cast<int>(j->getInt("schema", 1));
+    idx.schema = static_cast<int>(j->getInt("schema", 2));
+    if (idx.schema < 2) {
+        return Error(ErrorCode::InvalidField,
+                     "index.json schema 必须 >= 2（证书模式）");
+    }
     idx.baseUrl = baseUrl;
-    idx.officialPub = replaceBaseUrl(j->getString("official_pub"), baseUrl);
+    idx.officialCert = replaceBaseUrl(j->getString("official_cert"), baseUrl);
 
     // developers
     auto devsJson = j->get("developers");
@@ -101,8 +105,7 @@ Result<Index> parseIndex(const std::string& jsonText,
                 if (!dvJson || !dvJson->isObject()) continue;
 
                 DeveloperInfo di;
-                di.pub = replaceBaseUrl(dvJson->getString("pub"), baseUrl);
-                di.pubSig = replaceBaseUrl(dvJson->getString("pub_sig"), baseUrl);
+                di.cert = replaceBaseUrl(dvJson->getString("cert"), baseUrl);
                 idx.developers[devName] = std::move(di);
             }
         }
@@ -118,9 +121,8 @@ Result<Index> parseIndex(const std::string& jsonText,
                 if (!dvJson || !dvJson->isObject()) continue;
 
                 DomainInfo di;
-                di.index          = replaceBaseUrl(dvJson->getString("index"), baseUrl);
-                di.officialPub    = replaceBaseUrl(dvJson->getString("official_pub"), baseUrl);
-                di.officialPubSig = replaceBaseUrl(dvJson->getString("official_pub_sig"), baseUrl);
+                di.index = replaceBaseUrl(dvJson->getString("index"), baseUrl);
+                di.cert  = replaceBaseUrl(dvJson->getString("cert"), baseUrl);
                 idx.domains[domName] = std::move(di);
             }
         }
@@ -154,13 +156,25 @@ Result<Index> parseIndex(const std::string& jsonText,
             if (!vJson) continue;
 
             PackageVersion pv;
-            pv.kind      = vJson->getString("kind", "driver");
-            pv.developer = vJson->getString("developer");
-            pv.url       = replaceBaseUrl(vJson->getString("url"), baseUrl);
-            pv.sigUrl    = replaceBaseUrl(vJson->getString("sig_url"), baseUrl);
-            pv.sha256    = vJson->getString("sha256");
-            pv.size      = static_cast<uint64_t>(vJson->getInt("size", 0));
-            pv.license   = vJson->getString("license");
+            pv.kind        = vJson->getString("kind", "driver");
+            pv.chip        = vJson->getString("chip");
+            pv.developer   = vJson->getString("developer");
+            pv.url         = replaceBaseUrl(vJson->getString("url"), baseUrl);
+            pv.sigUrl      = replaceBaseUrl(vJson->getString("sig_url"), baseUrl);
+            pv.sha256      = vJson->getString("sha256");
+            pv.size        = static_cast<uint64_t>(vJson->getInt("size", 0));
+            pv.license     = vJson->getString("license");
+            pv.description = vJson->getString("description");
+
+            if (auto v = vJson->get("config"); v && v->isObject()) {
+                pv.configJson = json::dump(*v, -1);
+            }
+            if (auto v = vJson->get("provides"); v && v->isObject()) {
+                pv.providesJson = json::dump(*v, -1);
+            }
+            if (auto v = vJson->get("pins"); v && v->isObject()) {
+                pv.pinsJson = json::dump(*v, -1);
+            }
 
             auto reqJson = vJson->get("requires");
             if (reqJson && reqJson->isObject()) {

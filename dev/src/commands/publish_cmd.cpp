@@ -347,144 +347,12 @@ int PublishCmd::run(DevContext& ctx) {
     if (ec) { err("拷贝 sig 失败: " + ec.message()); return 1; }
     ok("已放置产物: " + devDir.string());
 
-    // 13. index.json
-    info("更新 index.json...");
-    fs::path indexPath = repoRoot / "index.json";
-    {
-        json::Value index;
-        if (fs::exists(indexPath)) {
-            auto j = json::parseFile(indexPath);
-            if (j) index = *j;
-        } else {
-            index = json::Value::object();
-            index.set("schema", json::Value(int64_t(1)));
-            index.set("official_pub", json::Value("{baseurl}/official.pub"));
-            index.set("developers", json::Value::object());
-            index.set("domains", json::Value::object());
-            index.set("packages", json::Value::object());
-        }
-
-        auto devs = index.get("developers");
-        if (!devs || !devs->isObject()) {
-            index.set("developers", json::Value::object());
-            devs = index.get("developers");
-        }
-        if (!devs->has(cfg->developer)) {
-            auto devObj = json::Value::object();
-            devObj.set("pub", json::Value("{baseurl}/" + cfg->developer + "/" +
-                                          cfg->developer + ".pub"));
-            devObj.set("pub_sig", json::Value("{baseurl}/" + cfg->developer + "/" +
-                                              cfg->developer + ".pub.sig"));
-            devs->set(cfg->developer, devObj);
-        }
-
-        // pkgKey 用外层定义好的
-
-        auto packages = index.get("packages");
-        if (!packages || !packages->isObject()) {
-            index.set("packages", json::Value::object());
-            packages = index.get("packages");
-        }
-        json::Value pkgInfo;
-        if (packages->has(pkgKey)) {
-            pkgInfo = *packages->get(pkgKey);
-        } else {
-            pkgInfo = json::Value::object();
-            pkgInfo.set("versions", json::Value::object());
-        }
-        auto versions = pkgInfo.get("versions");
-        if (!versions || !versions->isObject()) {
-            pkgInfo.set("versions", json::Value::object());
-            versions = pkgInfo.get("versions");
-        }
-
-        json::Value requires_    = json::Value::object();
-        json::Value description_ = json::Value("");
-        json::Value config_      = json::Value::object();
-        json::Value provides_    = json::Value::object();
-        json::Value pins_        = json::Value::object();
-        {
-            fs::path mp = fs::exists(manifestPath) ? manifestPath : chipPath;
-            if (fs::exists(mp)) {
-                auto mj = json::parseFile(mp);
-                if (mj) {
-                    auto reqs = mj->get("requires");
-                    if (reqs) requires_ = *reqs;
-
-                    auto desc = mj->get("description");
-                    if (desc && desc->isString()) description_ = *desc;
-
-                    auto cfgv = mj->get("config");
-                    if (cfgv && cfgv->isObject()) config_ = *cfgv;
-
-                    auto prov = mj->get("provides");
-                    if (prov && prov->isObject()) provides_ = *prov;
-
-                    auto pins = mj->get("pins");
-                    if (pins && pins->isObject()) pins_ = *pins;
-                }
-            }
-        }
-
-        auto verObj = json::Value::object();
-        verObj.set("kind", json::Value(isChip ? "chip" : "driver"));
-        verObj.set("chip", json::Value(chip));
-        verObj.set("developer", json::Value(cfg->developer));
-        verObj.set("url", json::Value("{baseurl}/" + cfg->developer + "/" +
-                                      pkgBase + ".tar.gz"));
-        verObj.set("sig_url", json::Value("{baseurl}/" + cfg->developer + "/" +
-                                          pkgBase + ".tar.gz.sig"));
-        verObj.set("sha256", json::Value(sha));
-        verObj.set("size", json::Value(static_cast<int64_t>(size)));
-        verObj.set("license", json::Value(license));
-        verObj.set("description", description_);
-        verObj.set("config", config_);
-        verObj.set("provides", provides_);
-        verObj.set("requires", requires_);
-        if (isChip) {
-            verObj.set("pins", pins_);
-        }
-
-        versions->set(version, verObj);
-        pkgInfo.set("versions", *versions);
-        packages->set(pkgKey, pkgInfo);
-        index.set("packages", *packages);
-
-        auto writeSt = json::writeFile(index, indexPath);
-        if (!writeSt.ok()) {
-            err("写 index.json 失败: " + writeSt.error().message());
-            return 1;
-        }
-        ok("已更新 index.json");
-    }
-
-    // 14. 签名 index.json
-    info("签名 index.json...");
-    fs::path indexSigPath = repoRoot / "index.json.sig";
-    if (alg == "ed25519" || alg == "ed448") {
-        st = hpm::util::runProcess("openssl",
-            {"pkeyutl", "-sign", "-inkey", keyPath_,
-             "-rawin", "-in", indexPath.string(), "-out", indexSigPath.string()},
-            false);
-    } else {
-        st = hpm::util::runProcess("openssl",
-            {"dgst", "-sha256", "-sign", keyPath_,
-             "-out", indexSigPath.string(), indexPath.string()},
-            false);
-    }
-    if (!st.ok()) {
-        err("签名 index.json 失败: " + st.error().message());
-        return 1;
-    }
-    ok("已签名 " + indexSigPath.string());
-
-    // 15. git add / commit
+    // 13. git add / commit
     info("提交...");
     st = runGit(repoRoot,
         {"add",
          (fs::path(cfg->developer) / tarName).string(),
-         (fs::path(cfg->developer) / sigName).string(),
-         "index.json", "index.json.sig"},
+         (fs::path(cfg->developer) / sigName).string()},
         false);
     if (!st.ok()) {
         err("git add 失败: " + st.error().message());
@@ -498,7 +366,7 @@ int PublishCmd::run(DevContext& ctx) {
         ok("已提交 " + pkgKey + "@" + version);
     }
 
-    // 16. push
+    // 14. push
     auto originUrl = runGit(repoRoot, {"remote", "get-url", "origin"}, false);
     bool hasRemote = originUrl.ok();
 
@@ -512,7 +380,7 @@ int PublishCmd::run(DevContext& ctx) {
         }
         ok("已推送 " + pkgKey + "@" + version);
 
-        // 17. 同步到开发者中心
+        // 15. 同步到开发者中心
         info("同步到开发者中心...");
         {
             std::string requiresJsonStr = "{}";

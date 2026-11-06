@@ -45,7 +45,7 @@ int main(int argc, char** argv) {
 
     // publish
     hpm::cli::PublishCmd publishCmd;
-    auto* publishSub = app.add_subcommand("publish", "打包 + 签名");
+    auto* publishSub = app.add_subcommand("publish", "打包 + 签包（不更新索引）");
     publishCmd.setup(*publishSub);
 
     //CLI Login

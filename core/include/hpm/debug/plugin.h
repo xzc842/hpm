@@ -37,7 +37,7 @@
 extern "C" {
 #endif
 
-#define HPM_DEBUG_ABI_VERSION 1
+#define HPM_DEBUG_ABI_VERSION 2
 
 typedef struct {
     const char* key;
@@ -66,7 +66,8 @@ typedef enum {
     HPM_DEBUG_EVENT_MMIO = 1,
     HPM_DEBUG_EVENT_BUS = 2,
     HPM_DEBUG_EVENT_IRQ = 3,
-    HPM_DEBUG_EVENT_JSON = 4
+    HPM_DEBUG_EVENT_JSON = 4,
+    HPM_DEBUG_EVENT_USB = 5
 } HpmDebugEventType;
 
 typedef struct {
@@ -101,6 +102,16 @@ typedef struct {
 
 typedef struct {
     uint64_t time;
+    uint32_t xfer_id;
+    uint16_t len;
+    uint8_t ep;
+    uint8_t token;
+    uint8_t handshake;
+    const uint8_t* data;
+} HpmDebugUsbEvent;
+
+typedef struct {
+    uint64_t time;
     uint32_t number;
     uint32_t pending;
 } HpmDebugIrqEvent;
@@ -111,6 +122,7 @@ typedef struct {
         HpmDebugPinEvent pin;
         HpmDebugMmioEvent mmio;
         HpmDebugBusEvent bus;
+        HpmDebugUsbEvent usb;
         HpmDebugIrqEvent irq;
         const char* json; /* HPM_DEBUG_EVENT_JSON：外部输入 JSON 字符串 */
     } u;
@@ -141,9 +153,20 @@ typedef struct HpmDebugHostApi {
     /* 触发中断。 */
     int (*raise_irq)(void* host, uint32_t irq);
 
-    /* 总线响应。xfer_id 对应收到的 BUS 事件。 */
+    /* 总线响应。xfer_id 对应收到的 SPI BUS 事件。 */
     int (*bus_write)(void* host, uint32_t xfer_id,
                      const uint8_t* data, size_t len, uint32_t flags);
+
+    /* 通用总线发送：UART RX、SPI 响应、I2C 等。
+     * direction: 0=ToHost, 1=ToMcu；kind 见 mcus::BusEventKind。 */
+    int (*bus_send)(void* host, uint32_t bus_id, uint32_t xfer_id,
+                    uint8_t kind, uint8_t direction,
+                    const uint8_t* data, size_t len, uint8_t flags);
+
+    /* USB 响应/请求。 */
+    int (*usb_send)(void* host, uint32_t xfer_id, uint8_t ep,
+                    uint8_t token, uint8_t handshake,
+                    const uint8_t* data, size_t len);
 } HpmDebugHostApi;
 
 uint32_t hpm_debug_abi_version(void);

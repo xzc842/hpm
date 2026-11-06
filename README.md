@@ -206,6 +206,7 @@ hpm debug --json --isa build/lib/libmcus_isa_8051.so \
 |------|------|
 | `hpm init [--mcu <型号>]` | 初始化项目 |
 | `hpm sync [--dry-run]` | 拉取依赖、解析、生成 `driver/` |
+| `hpm search <包名[@版本]> [--json]` | 查询包信息；省略版本显示最新版本；支持关键字模糊匹配 |
 | `hpm build` | 编译固件到 `build/` |
 | `hpm flash` | 烧录固件 |
 | `hpm debug [--json] --model <model.json> --config <config.toml>` | 在 mcus 模拟器中运行固件并加载设备插件 |

@@ -21,6 +21,7 @@
 #include "commands/dev_export_cmd.h"
 #include "commands/flash_cmd.h"
 #include "commands/init_cmd.h"
+#include "commands/search_cmd.h"
 #include "commands/sync_cmd.h"
 
 namespace hpm::cli {
@@ -28,6 +29,7 @@ namespace hpm::cli {
 CommandRegistry::CommandRegistry() {
     commands_.push_back(std::make_unique<InitCmd>());
     commands_.push_back(std::make_unique<SyncCmd>());
+    commands_.push_back(std::make_unique<SearchCmd>());
     commands_.push_back(std::make_unique<BuildCmd>());
     commands_.push_back(std::make_unique<FlashCmd>());
     commands_.push_back(std::make_unique<CleanCmd>());

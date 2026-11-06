@@ -14,6 +14,9 @@
 
 add_library(hpm_debug_host STATIC
     src/host.cpp
+    src/bus_router.cpp
+    src/host_utils.cpp
+    src/pin_router.cpp
 )
 
 target_include_directories(hpm_debug_host

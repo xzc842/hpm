@@ -26,6 +26,10 @@
 #include <hpm/util/fs_utils.h>
 #include <hpm/util/process.h>
 
+#include "bus_router.h"
+#include "host_utils.h"
+#include "pin_router.h"
+
 #include <mcus/event_stream.h>
 #include <mcus/model.h>
 #include <mcus/shared_memory.h>
@@ -63,47 +67,6 @@ namespace {
 
 namespace fs = std::filesystem;
 
-std::string canonicalPin(std::string name) {
-    std::replace(name.begin(), name.end(), '_', '.');
-    return name;
-}
-
-std::string sanitizeName(const std::string& s) {
-    std::string out;
-    for (char c : s) {
-        if (std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_') {
-            out.push_back(c);
-        } else {
-            out.push_back('_');
-        }
-    }
-    return out;
-}
-
-std::string readCString(const char* s) { return s ? s : ""; }
-
-std::string toHex(const uint8_t* data, size_t len) {
-    static const char* digits = "0123456789abcdef";
-    std::string out;
-    out.reserve(len * 2);
-    for (size_t i = 0; i < len; ++i) {
-        out.push_back(digits[data[i] >> 4]);
-        out.push_back(digits[data[i] & 0x0F]);
-    }
-    return out;
-}
-
-std::string statusName(uint32_t status) {
-    switch (status) {
-        case 0: return "running";
-        case 1: return "paused";
-        case 2: return "dump_done";
-        case 3: return "halted";
-        default: return "unknown";
-    }
-}
-
-
 } // namespace
 
 struct Host::Impl {
@@ -114,6 +77,8 @@ struct Host::Impl {
     mcus::Model model;
     std::unique_ptr<mcus::SharedMemory> shm;
     std::unique_ptr<mcus::EventStream> events;
+    std::unique_ptr<BusRouter> busRouter;
+    std::unique_ptr<PinRouter> pinRouter;
 
     std::string shmName;
     std::string streamName;
@@ -164,18 +129,6 @@ struct Host::Impl {
     std::map<std::string, uint32_t> pinNameToId;       // canonical -> index
     std::vector<std::vector<DeviceCtx*>> pinDevices;
     std::vector<std::vector<std::string>> pinDeviceNames;
-
-    struct PinSub {
-        bool active = false;
-        bool all = false;
-        std::set<uint32_t> pins;
-        std::string mode = "change";
-        uint32_t intervalMs = 50;
-        std::chrono::steady_clock::time_point lastFlush;
-        std::map<uint32_t, mcus::PinEvent> pending;
-    };
-    PinSub pinSub;
-    std::mutex pinSubMutex;
 
     std::map<uint32_t, bool> breakpoints; // addr -> enabled
     std::map<uint32_t, uint32_t> bpHitCount;
@@ -328,16 +281,6 @@ struct Host::Impl {
             writeJsonLine(out);
         } else {
             writeLine("[" + dev.name + "] " + json::dump(*parsed, -1));
-        }
-    }
-
-    static const char* levelName(int level) {
-        switch (level) {
-            case HPM_DEBUG_LOG_TRACE: return "trace";
-            case HPM_DEBUG_LOG_DEBUG: return "debug";
-            case HPM_DEBUG_LOG_WARN: return "warn";
-            case HPM_DEBUG_LOG_ERROR: return "error";
-            default: return "info";
         }
     }
 
@@ -651,6 +594,7 @@ struct Host::Impl {
 
         std::vector<std::string> args = {
             "-std=c11", "-O2", "-fPIC", "-shared", "-Wall",
+            "-pthread",
             "-I", (pkg / "include").string(),
             "-I", debugDir.string(),
             "-I", pluginIncludeDir(),
@@ -808,6 +752,8 @@ struct Host::Impl {
             ctx->api.inject_mmio = &Impl::hostInjectMmio;
             ctx->api.raise_irq = &Impl::hostRaiseIrq;
             ctx->api.bus_write = &Impl::hostBusWrite;
+            ctx->api.bus_send = &Impl::hostBusSend;
+            ctx->api.usb_send = &Impl::hostUsbSend;
 
             HpmDebugDeviceInfo info{};
             info.device = ctx->name.c_str();
@@ -894,12 +840,30 @@ struct Host::Impl {
         return dev->host->raiseIrq(irq);
     }
 
-    static int hostBusWrite(void* host, uint32_t, const uint8_t*, size_t,
-                            uint32_t) {
+    static int hostBusWrite(void* host, uint32_t xfer_id,
+                            const uint8_t* data, size_t len, uint32_t flags) {
         auto* dev = static_cast<DeviceCtx*>(host);
-        if (!dev || !dev->host) return -1;
-        // 总线引擎接入前先返回“未实现”
-        return -1;
+        if (!dev || !dev->host || !dev->host->busRouter) return -1;
+        return dev->host->busRouter->sendSpiResponse(
+            xfer_id, data, len, static_cast<uint8_t>(flags));
+    }
+
+    static int hostBusSend(void* host, uint32_t bus_id, uint32_t xfer_id,
+                           uint8_t kind, uint8_t direction,
+                           const uint8_t* data, size_t len, uint8_t flags) {
+        auto* dev = static_cast<DeviceCtx*>(host);
+        if (!dev || !dev->host || !dev->host->busRouter) return -1;
+        return dev->host->busRouter->send(bus_id, xfer_id, kind, direction,
+                                          data, len, flags);
+    }
+
+    static int hostUsbSend(void* host, uint32_t xfer_id, uint8_t ep,
+                           uint8_t token, uint8_t handshake,
+                           const uint8_t* data, size_t len) {
+        auto* dev = static_cast<DeviceCtx*>(host);
+        if (!dev || !dev->host || !dev->host->busRouter) return -1;
+        return dev->host->busRouter->sendUsb(xfer_id, ep, token, handshake,
+                                             data, len);
     }
 
     // ---------- 引脚/注入 ----------
@@ -928,76 +892,6 @@ struct Host::Impl {
         obj.set("devices", devs);
         if (changed != 0) obj.set("changed", changed);
         return obj;
-    }
-
-    void queuePinChange(const mcus::PinEvent& pe) {
-        std::lock_guard<std::mutex> lock(pinSubMutex);
-        if (!pinSub.active) return;
-        if (!pinSub.all && !pinSub.pins.count(pe.pin_id)) return;
-        auto it = pinSub.pending.find(pe.pin_id);
-        if (it == pinSub.pending.end()) {
-            pinSub.pending.emplace(pe.pin_id, pe);
-        } else {
-            it->second.value = pe.value;
-            it->second.function = pe.function;
-            it->second.direction = pe.direction;
-            it->second.changed |= pe.changed;
-        }
-    }
-
-    void emitPinSnapshot(const std::set<uint32_t>& ids) {
-        if (!opts.jsonMode) return;
-        auto arr = json::Value::array();
-        for (uint32_t id : ids) {
-            if (id < model.pins.size()) arr.push(pinInfoJson(id, 7));
-        }
-        auto out = json::Value::object();
-        out.set("device", "mcu");
-        out.set("type", "event");
-        out.set("event", "pin.snapshot");
-        out.set("time", static_cast<uint64_t>(readVirtualTime()));
-        out.set("pins", arr);
-        writeJsonLine(out);
-    }
-
-    void flushPinSubscription() {
-        if (!opts.jsonMode) return;
-        std::vector<uint32_t> ids;
-        std::map<uint32_t, uint32_t> changedMap;
-        bool allMode = false;
-        {
-            std::lock_guard<std::mutex> lock(pinSubMutex);
-            if (!pinSub.active) return;
-            const auto now = std::chrono::steady_clock::now();
-            const auto elapsed =
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    now - pinSub.lastFlush).count();
-            if (elapsed < static_cast<long long>(pinSub.intervalMs)) return;
-
-            allMode = pinSub.mode == "all";
-            if (allMode) {
-                ids.assign(pinSub.pins.begin(), pinSub.pins.end());
-            } else {
-                for (const auto& [id, pe] : pinSub.pending) {
-                    ids.push_back(id);
-                    changedMap[id] = pe.changed;
-                }
-            }
-            pinSub.pending.clear();
-            pinSub.lastFlush = now;
-        }
-        if (ids.empty()) return;
-
-        auto arr = json::Value::array();
-        for (uint32_t id : ids) {
-            arr.push(pinInfoJson(id, changedMap.count(id) ? changedMap[id] : 0));
-        }
-        auto out = json::Value::object();
-        out.set("device", "mcu");
-        out.set("type", "pin");
-        out.set("time", static_cast<uint64_t>(readVirtualTime()));
-        out.set("pins", arr);
-        writeJsonLine(out);
     }
 
     // ---------- 设备元数据/状态 ----------
@@ -1082,7 +976,10 @@ struct Host::Impl {
         pe.function = pins[idx].function.load();
         pe.direction = pins[idx].direction.load();
         pe.changed = 1;
-        queuePinChange(mcus::PinEvent{idx, value, pe.function, pe.direction, 1});
+        if (pinRouter) {
+            pinRouter->queue(mcus::PinEvent{
+                idx, value, pe.function, pe.direction, 1});
+        }
         HpmDebugEvent ev{};
         ev.type = HPM_DEBUG_EVENT_PIN;
         ev.u.pin = pe;
@@ -1305,6 +1202,15 @@ struct Host::Impl {
     }
 
     // ---------- 事件 ----------
+    void broadcastPluginEvent(const HpmDebugEvent& out) {
+        std::lock_guard<std::recursive_mutex> pluginLock(pluginMutex);
+        for (auto& dev : devices) {
+            if (dev->ctx && dev->lib && dev->lib->event) {
+                dev->lib->event(dev->ctx, &out);
+            }
+        }
+    }
+
     void dispatchEvent(const mcus::DebugEvent& ev) {
         switch (ev.type) {
             case mcus::DebugEventType::Pin: {
@@ -1320,9 +1226,11 @@ struct Host::Impl {
                 pe.direction = ev.u.pin.direction;
                 pe.changed = ev.u.pin.changed;
 
-                queuePinChange(mcus::PinEvent{
-                    ev.u.pin.pin_id, ev.u.pin.value, ev.u.pin.function,
-                    ev.u.pin.direction, ev.u.pin.changed});
+                if (pinRouter) {
+                    pinRouter->queue(mcus::PinEvent{
+                        ev.u.pin.pin_id, ev.u.pin.value, ev.u.pin.function,
+                        ev.u.pin.direction, ev.u.pin.changed});
+                }
 
                 HpmDebugEvent out{};
                 out.type = HPM_DEBUG_EVENT_PIN;
@@ -1378,7 +1286,10 @@ struct Host::Impl {
                 break;
             }
             case mcus::DebugEventType::Bus:
-                // 总线引擎接入后再路由
+                if (busRouter) busRouter->route(ev.u.bus);
+                break;
+            case mcus::DebugEventType::Usb:
+                if (busRouter) busRouter->routeUsb(ev.u.usb);
                 break;
         }
     }
@@ -1394,7 +1305,7 @@ struct Host::Impl {
             if (!got) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
-            flushPinSubscription();
+            if (pinRouter) pinRouter->flush();
             if (shm) {
                 auto* bh = shm->breakpoint_header();
                 if (bh->hit.load() != 0 && !bpReported) {
@@ -1599,30 +1510,20 @@ struct Host::Impl {
                             for (uint32_t i = 0; i < model.pins.size(); ++i)
                                 ids.insert(i);
                         }
-                        {
-                            std::lock_guard<std::mutex> lock(pinSubMutex);
-                            pinSub.active = true;
-                            pinSub.all = all;
-                            pinSub.pins = ids;
-                            pinSub.mode = mode;
-                            pinSub.intervalMs = static_cast<uint32_t>(interval);
-                            pinSub.pending.clear();
-                            pinSub.lastFlush = std::chrono::steady_clock::now();
+                        if (pinRouter) {
+                            pinRouter->subscribe(
+                                ids, all, mode,
+                                static_cast<uint32_t>(interval));
+                            pinRouter->snapshot(ids);
                         }
                         result.set("subscribed", static_cast<uint64_t>(ids.size()));
                         result.set("mode", mode);
                         result.set("interval_ms", interval);
-                        emitPinSnapshot(ids);
                     }
                 }
             }
         } else if (cmd == "pin.unsubscribe") {
-            {
-                std::lock_guard<std::mutex> lock(pinSubMutex);
-                pinSub.active = false;
-                pinSub.pending.clear();
-                pinSub.pins.clear();
-            }
+            if (pinRouter) pinRouter->unsubscribe();
             result.set("ok", true);
         } else if (cmd == "device.list") {
             auto arr = json::Value::array();
@@ -2083,6 +1984,18 @@ struct Host::Impl {
         if (!writeSessionConfig()) return 1;
         if (!spawnSimulator()) return 1;
         if (!waitForSimulator()) return 1;
+        busRouter = std::make_unique<BusRouter>(
+            events.get(), [this](const HpmDebugEvent& out) {
+                broadcastPluginEvent(out);
+            });
+        pinRouter = std::make_unique<PinRouter>(
+            [this](uint32_t id, uint32_t changed) {
+                return pinInfoJson(id, changed);
+            },
+            [this](const json::Value& out) {
+                if (opts.jsonMode) writeJsonLine(out);
+            },
+            [this] { return static_cast<uint64_t>(readVirtualTime()); });
         if (!createPlugins()) return 1;
 
         ready = true;

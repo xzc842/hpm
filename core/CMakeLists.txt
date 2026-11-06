@@ -38,8 +38,9 @@ add_library(hpm_core STATIC
     src/generator/hpm_h_generator.cpp
     src/registry/index.cpp
     src/registry/registry_client.cpp
+    src/registry/certificate.cpp
     src/registry/signature.cpp
-    src/registry/official_key.cpp
+    src/registry/official_cert.cpp
 )
 
 target_include_directories(hpm_core
