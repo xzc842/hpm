@@ -431,19 +431,32 @@ GUI 按 `features` 启用功能；旧 host 没有 `features` 时按 v1 降级。
 
 ---
 
-## 8. USB CDC 设备
+## 8. USB CDC 设备(例)
 
-USB CDC 设备的虚拟串口由设备插件在宿主侧创建为 PTY：
+USB CDC 设备作为**输入设备**出现，不再增加输出设备：
 
-```text
-~/.hpm/usb-cdc/serial.tty -> /dev/pts/N
+```json
+{"role":"input","channels":[
+  {"id":"tx","direction":"in","type":"string","widget":"textarea"},
+  {"id":"send","direction":"in","type":"bool","widget":"button"}
+]}
 ```
 
-在 `device.list` / `device.describe` 中它会以普通设备出现，`port` 通道是只读字符串，
-值就是 PTY 路径。JSON 协议没有 `usb.read` / `usb.write`：
+发送：
 
-- 串口数据请直接打开该 PTY 文件；
-- JSON 只用于设备元数据、状态和 `hpm debug` 控制；
-- 不需要 root，也不会创建 `/dev/ttyACM0`。
+```json
+{"device":"serial","data":{"cmd":"set","channel":"tx","value":"hello\n"}}
+{"device":"serial","data":{"cmd":"set","channel":"send","value":true}}
+```
+
+或：
+
+```json
+{"device":"serial","data":{"cmd":"invoke","channel":"send"}}
+```
+
+如果 `tx` 值包含 `\n` 或 `\r`，插件会自动发送，不需要额外的 `send`。通过 send 动作发送时，如果末尾没有换行，插件会自动补 `\n`，方便 shell 类固件处理。
+发送内容会以 `TX: ...` 日志输出；固件返回的串口数据由插件通过 `log` 事件写入宿主日志窗口，不通过 `$state.rx`。
+PTY 路径（`~/.hpm/usb-cdc/serial.tty`）在启动日志中打印，仍可直接打开。
 
 插件 ABI 当前是 `2`；设备插件需要用 `core/include/hpm/debug/plugin.h` 重新编译。

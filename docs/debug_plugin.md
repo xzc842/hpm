@@ -452,13 +452,24 @@ picocom -b 115200 ~/.hpm/usb-cdc/serial.tty
 设备 UI：
 
 ```json
-{"$ui":{"schema":"hpm-ui/1","role":"output","title":"USB CDC",
-  "channels":[{"id":"port","name":"Serial Port","direction":"out",
-               "type":"string","readonly":true}],
-  "state":{"port":"/home/.../.hpm/usb-cdc/serial.tty"}}}
+{"$ui":{"schema":"hpm-ui/1","role":"input","title":"USB CDC",
+  "channels":[
+    {"id":"tx","name":"发送内容","direction":"in","type":"string",
+     "widget":"textarea","rows":4},
+    {"id":"send","name":"发送","direction":"in","type":"bool",
+     "widget":"button","default":false}
+  ],
+  "state":{"send":false}}}
 ```
 
-外部 JSON 程序可以看到 `port` 通道，但收发串口数据需要打开这个文件，不走 JSON 协议。
+前端流程：
+
+1. `set tx` 保存要发送的文本；如果文本包含 `\n`/`\r`（textarea 回车），会自动发送；
+2. 也可以先 `set tx`，再 `set send=true` 或 `invoke send`；发送时如果末尾没有换行会自动补 `\n`；
+3. 发送内容会以 `TX: ...` 日志打印到日志窗口；
+4. 固件返回的数据通过宿主 `log` 事件输出到日志窗口，不再新增输出设备；
+5. PTY 路径只打印在启动日志里，不再作为 UI 通道。
+
 
 ---
 
