@@ -15,8 +15,9 @@
 // core/src/registry/signature.cpp
 #include <hpm/registry/signature.h>
 
+#include <hpm/registry/certificate.h>
+
 #include <openssl/evp.h>
-#include <openssl/pem.h>
 #include <openssl/sha.h>
 
 #include <fstream>
@@ -45,92 +46,69 @@ std::string toHex(const unsigned char* data, size_t len) {
     return oss.str();
 }
 
-} // namespace
-
-Result<bool> verifySignature(const std::filesystem::path& pubKeyPem,
-                              const std::filesystem::path& sigFile,
-                              const std::filesystem::path& dataFile) {
-    // 读公钥
-    FILE* pubFile = fopen(pubKeyPem.string().c_str(), "r");
-    if (!pubFile) {
-        return Error(ErrorCode::IoError,
-                     "无法打开公钥: " + pubKeyPem.string());
-    }
-    EVP_PKEY* pkey = PEM_read_PUBKEY(pubFile, nullptr, nullptr, nullptr);
-    fclose(pubFile);
-
+Result<bool> verifyWithKey(EVP_PKEY* pkey,
+                           const std::filesystem::path& sigFile,
+                           const std::filesystem::path& dataFile) {
     if (!pkey) {
-        return Error(ErrorCode::InvalidField,
-                     "公钥格式错误: " + pubKeyPem.string());
+        return Error(ErrorCode::InvalidField, "证书没有公钥");
     }
 
-    // 读签名
     auto sig = readFile(sigFile);
     if (sig.empty()) {
-        EVP_PKEY_free(pkey);
         return Error(ErrorCode::IoError,
                      "无法读签名: " + sigFile.string());
     }
 
-    // 读数据
     auto data = readFile(dataFile);
     if (data.empty()) {
-        EVP_PKEY_free(pkey);
         return Error(ErrorCode::IoError,
                      "无法读数据: " + dataFile.string());
     }
 
-    // 根据密钥类型选 digest
-    int keyType = EVP_PKEY_base_id(pkey);
+    const int keyType = EVP_PKEY_base_id(pkey);
     const EVP_MD* md = nullptr;
-
-    if (keyType == EVP_PKEY_RSA) {
+    if (keyType == EVP_PKEY_RSA || keyType == EVP_PKEY_EC) {
         md = EVP_sha256();
-    } else if (keyType == EVP_PKEY_EC) {
-        md = EVP_sha256();
-    } else if (keyType == EVP_PKEY_ED25519) {
-        md = nullptr;   // Ed25519 不做哈希
-    } else if (keyType == EVP_PKEY_ED448) {
-        md = nullptr;   // Ed448 也不做哈希
+    } else if (keyType == EVP_PKEY_ED25519 ||
+               keyType == EVP_PKEY_ED448) {
+        md = nullptr;
     } else {
-        EVP_PKEY_free(pkey);
         return Error(ErrorCode::InvalidField,
-                     "不支持的密钥类型: " + std::to_string(keyType));
+                     "不支持的证书公钥类型: " + std::to_string(keyType));
     }
 
-    // 验证
     EVP_MD_CTX* ctx = EVP_MD_CTX_new();
     bool ok = false;
     if (ctx) {
         if (EVP_DigestVerifyInit(ctx, nullptr, md, nullptr, pkey) == 1) {
             if (md) {
-                // RSA / ECDSA：先 update 再 final
                 if (EVP_DigestVerifyUpdate(ctx, data.data(), data.size()) == 1) {
-                    int rc = EVP_DigestVerifyFinal(ctx, sig.data(), sig.size());
-                    ok = (rc == 1);
+                    ok = EVP_DigestVerifyFinal(ctx, sig.data(), sig.size()) == 1;
                 }
             } else {
-                // Ed25519 / Ed448：一次性 verify
-                int rc = EVP_DigestVerify(ctx, sig.data(), sig.size(),
-                                           data.data(), data.size());
-                ok = (rc == 1);
+                ok = EVP_DigestVerify(ctx, sig.data(), sig.size(),
+                                      data.data(), data.size()) == 1;
             }
         }
         EVP_MD_CTX_free(ctx);
     }
-
-    EVP_PKEY_free(pkey);
     return ok;
 }
 
-bool isValidPublicKey(const std::filesystem::path& pubKeyPem) {
-    FILE* f = fopen(pubKeyPem.string().c_str(), "r");
-    if (!f) return false;
-    EVP_PKEY* pkey = PEM_read_PUBKEY(f, nullptr, nullptr, nullptr);
-    fclose(f);
-    if (!pkey) return false;
-    EVP_PKEY_free(pkey);
-    return true;
+} // namespace
+
+Result<bool> verifySignatureWithCert(const std::filesystem::path& certPem,
+                                     const std::filesystem::path& sigFile,
+                                     const std::filesystem::path& dataFile) {
+    auto cert = loadCertificateFile(certPem);
+    if (!cert) return cert.error();
+
+    auto key = certificatePublicKey(*cert);
+    if (!key) {
+        return Error(ErrorCode::InvalidField,
+                     "无法读取证书公钥: " + certPem.string());
+    }
+    return verifyWithKey(key.get(), sigFile, dataFile);
 }
 
 std::string sha256File(const std::filesystem::path& file) {
@@ -157,40 +135,6 @@ std::string sha256File(const std::filesystem::path& file) {
     EVP_MD_CTX_free(ctx);
 
     return toHex(hash, hashLen);
-}
-
-std::string publicKeyFingerprint(const std::filesystem::path& pubKeyPem) {
-    // 读 PEM
-    FILE* f = fopen(pubKeyPem.string().c_str(), "r");
-    if (!f) return "";
-    EVP_PKEY* pkey = PEM_read_PUBKEY(f, nullptr, nullptr, nullptr);
-    fclose(f);
-    if (!pkey) return "";
-
-    // 转 DER
-    int derLen = i2d_PUBKEY(pkey, nullptr);
-    if (derLen <= 0) {
-        EVP_PKEY_free(pkey);
-        return "";
-    }
-
-    std::vector<unsigned char> der(derLen);
-    unsigned char* p = der.data();
-    i2d_PUBKEY(pkey, &p);
-    EVP_PKEY_free(pkey);
-
-    // SHA256(DER)
-    unsigned char hash[SHA256_DIGEST_LENGTH];
-    SHA256(der.data(), der.size(), hash);
-
-    // 格式化成 XX:XX:...
-    std::ostringstream oss;
-    for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
-        if (i > 0) oss << ":";
-        oss << std::hex << std::setw(2) << std::setfill('0')
-            << static_cast<int>(hash[i]);
-    }
-    return oss.str();
 }
 
 } // namespace hpm::registry

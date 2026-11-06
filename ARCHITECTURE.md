@@ -15,7 +15,7 @@ HPM 的 Resolver 采用“两阶段解析”：
 2. **阶段二**：将树摊平为 `DriverState`，交由 `CapabilityChecker` 检查所有引脚能力是否满足、是否存在冲突。
 
 ## 4. 信任链与分发 (Registry)
-基于去中心化的联邦制设计。官方根索引提供开发者域路由，并验证开发者公钥。开发者可在自己的私域中发布驱动包并进行签名。HPM 客户端会在下载时进行 `official.pub -> index.json -> dev.pub -> package.tar.gz` 的链式签名验证。
+基于去中心化的联邦制设计。内置根 CA 证书验证官方仓库证书，官方仓库证书签发域仓库证书，域仓库证书签发开发者证书。HPM 客户端会在下载时进行 `root.crt -> official.crt -> domain.crt -> developer.crt -> package.tar.gz` 的链式签名验证。
 
 ## 5. 代码生成 (Generator)
 将宏注入、配置打平、代码拷贝结合。生成的 `hpm_dev.h` 提供设备宏，`config.h` 提供配置宏，底层依赖 `HPM_CALL` 进行宏拼接。

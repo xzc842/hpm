@@ -87,9 +87,13 @@ Result<Index> parseIndex(const std::string& jsonText,
     }
 
     Index idx;
-    idx.schema = static_cast<int>(j->getInt("schema", 1));
+    idx.schema = static_cast<int>(j->getInt("schema", 2));
+    if (idx.schema < 2) {
+        return Error(ErrorCode::InvalidField,
+                     "index.json schema 必须 >= 2（证书模式）");
+    }
     idx.baseUrl = baseUrl;
-    idx.officialPub = replaceBaseUrl(j->getString("official_pub"), baseUrl);
+    idx.officialCert = replaceBaseUrl(j->getString("official_cert"), baseUrl);
 
     // developers
     auto devsJson = j->get("developers");
@@ -101,8 +105,7 @@ Result<Index> parseIndex(const std::string& jsonText,
                 if (!dvJson || !dvJson->isObject()) continue;
 
                 DeveloperInfo di;
-                di.pub = replaceBaseUrl(dvJson->getString("pub"), baseUrl);
-                di.pubSig = replaceBaseUrl(dvJson->getString("pub_sig"), baseUrl);
+                di.cert = replaceBaseUrl(dvJson->getString("cert"), baseUrl);
                 idx.developers[devName] = std::move(di);
             }
         }
@@ -118,9 +121,8 @@ Result<Index> parseIndex(const std::string& jsonText,
                 if (!dvJson || !dvJson->isObject()) continue;
 
                 DomainInfo di;
-                di.index          = replaceBaseUrl(dvJson->getString("index"), baseUrl);
-                di.officialPub    = replaceBaseUrl(dvJson->getString("official_pub"), baseUrl);
-                di.officialPubSig = replaceBaseUrl(dvJson->getString("official_pub_sig"), baseUrl);
+                di.index = replaceBaseUrl(dvJson->getString("index"), baseUrl);
+                di.cert  = replaceBaseUrl(dvJson->getString("cert"), baseUrl);
                 idx.domains[domName] = std::move(di);
             }
         }

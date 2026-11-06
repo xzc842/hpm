@@ -102,6 +102,7 @@ Result<fs::path> selectFirmware(const fs::path& buildDir,
 }
 
 // 读取 mcus 配置里的共享内存名，仅用于展示
+/*
 std::string configValue(const fs::path& configPath, const std::string& section,
                         const std::string& key, const std::string& fallback) {
     try {
@@ -116,7 +117,7 @@ std::string configValue(const fs::path& configPath, const std::string& section,
     }
     return fallback;
 }
-
+*/
 // 根据模型 arch 推导 ISA 动态库名：libmcus_isa_<arch>.so
 fs::path defaultIsaPath(const std::string& arch) {
     return fs::path("libmcus_isa_" + arch + ".so");

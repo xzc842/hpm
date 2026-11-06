@@ -24,7 +24,7 @@
 | `core/util/process` | 大 |
 | `core/util/fs_utils` | 中 |
 | `core/registry/registry_client` | 中 |
-| `core/registry/official_key` | 小 |
+| `core/registry/official_cert` | 小 |
 | `core/toolchain/toolchain_manager` | 大 |
 | `core/generator/generator` | 中 |
 | `cli/`、`dev/` | 小 |

@@ -17,6 +17,7 @@
 // core/include/hpm/registry/registry_client.h
 #pragma once
 
+#include <hpm/registry/certificate.h>
 #include <hpm/registry/index.h>
 #include <hpm/result.h>
 
@@ -74,7 +75,7 @@ private:
                               DownloadProgress progress);
 
     // 签名验证
-    Result<std::filesystem::path> fetchAndVerifyDeveloperKey(
+    Result<std::filesystem::path> fetchAndVerifyDeveloperCert(
         const std::string& domain,       // 空 = 主仓库
         const std::string& devName);
     Status verifyPackageSignature(const std::filesystem::path& tarball,
@@ -90,13 +91,13 @@ private:
     Index          cachedIndex_;
     bool           indexLoaded_ = false;
 
-    std::filesystem::path officialPubKey_;
+    CertificatePtr officialCert_;
 
     // 域缓存
     std::map<std::string, Index>                  domainIndexes_;
-    std::map<std::string, std::filesystem::path>  domainPubKeys_;
+    std::map<std::string, std::filesystem::path>  domainCertPaths_;
 
-    std::map<std::string, std::filesystem::path>  developerKeys_;
+    std::map<std::string, std::filesystem::path>  developerCertPaths_;
 };
 
 } // namespace hpm::registry

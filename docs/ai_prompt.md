@@ -700,7 +700,8 @@ hpm flash
 | 变量 | 说明 |
 |------|------|
 | `HPM_REGISTRY` | 索引 URL（默认 GitHub） |
-| `HPM_OFFICIAL_PUB` | 官方公钥 URL |
+| `HPM_OFFICIAL_CERT` | 官方证书 URL |
+| `HPM_ROOT_CA` | 根证书路径（测试覆盖用） |
 | `HPM_HOME` | 缓存目录（默认 `~/.hpm`） |
 | `HPM_SKIP_SIGNATURE` | 跳过签名验证（仅开发） |
 

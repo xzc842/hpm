@@ -29,15 +29,13 @@ namespace hpm::registry {
 
 // 开发者信息
 struct DeveloperInfo {
-    std::string pub;       // 公钥 URL
-    std::string pubSig;    // 公钥签名 URL
+    std::string cert;      // 开发者证书 URL
 };
 
 // 域信息
 struct DomainInfo {
-    std::string index;           // 域索引 URL
-    std::string officialPub;     // 域官方公钥 URL
-    std::string officialPubSig;  // 域官方公钥签名 URL（用主仓库私钥签）
+    std::string index;      // 域索引 URL
+    std::string cert;       // 域仓库证书 URL（由官方证书签发）
 };
 
 // 索引里的一个包版本
@@ -61,8 +59,8 @@ struct PackageInfo {
 
 // 索引
 struct Index {
-    int schema = 1;
-    std::string officialPub;
+    int schema = 2;
+    std::string officialCert;
     std::string baseUrl;
 
     std::map<std::string, DeveloperInfo> developers;

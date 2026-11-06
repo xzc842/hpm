@@ -16,7 +16,7 @@
 #include <hpm/registry/registry_client.h>
 
 #include <hpm/json/json_io.h>
-#include <hpm/registry/official_key.h>
+#include <hpm/registry/official_cert.h>
 #include <hpm/registry/signature.h>
 #include <hpm/util/process.h>
 
@@ -247,7 +247,8 @@ Result<void> RegistryClient::httpDownload(
     if (res != CURLE_OK) {
         std::filesystem::remove(dest);
         return Error(ErrorCode::NetworkError,
-                     "下载失败: " + std::string(curl_easy_strerror(res)));
+                     "下载失败: " + std::string(curl_easy_strerror(res)) +
+                     " URL: " + url);
     }
     if (!isFile && httpCode != 200) {
         std::filesystem::remove(dest);
@@ -264,14 +265,18 @@ Result<void> RegistryClient::httpDownload(
 Result<Index> RegistryClient::fetchIndex(DownloadProgress progress) {
     if (indexLoaded_) return cachedIndex_;
 
+    std::filesystem::path officialCertPath;
     if (!config_.skipSignature) {
-        OfficialKeyManager keyMgr(config_.cacheDir);
-        auto key = keyMgr.ensure();
-        if (!key) {
+        OfficialCertManager certMgr(config_.cacheDir);
+        auto certPath = certMgr.ensure();
+        if (!certPath) {
             return Error(ErrorCode::PermissionDenied,
-                         "官方公钥获取失败: " + key.error().message());
+                         "官方证书获取失败: " + certPath.error().message());
         }
-        officialPubKey_ = *key;
+        auto cert = loadCertificateFile(*certPath);
+        if (!cert) return cert.error();
+        officialCert_ = *cert;
+        officialCertPath = *certPath;
     }
 
     std::string lastError;
@@ -311,7 +316,7 @@ Result<Index> RegistryClient::fetchIndex(DownloadProgress progress) {
                 f << *sigText;
             }
 
-            auto ok = verifySignature(officialPubKey_, tmpSig, tmpIndex);
+            auto ok = verifySignatureWithCert(officialCertPath, tmpSig, tmpIndex);
             if (!ok) {
                 lastError = "索引签名验证失败: " + ok.error().message();
                 continue;
@@ -378,31 +383,29 @@ Result<const Index*> RegistryClient::fetchDomainIndex(
         return &domainIndexes_[domain];
     }
 
-    // 1. 下载域官方公钥 + 签名
+    // 1. 下载域证书
     auto keyDir = config_.cacheDir / "cache" / "domains" / domain;
     std::filesystem::create_directories(keyDir);
 
-    auto pubPath = keyDir / HPM_FILE_OFFICIAL_PUB;
-    auto pubSigPath = keyDir / "official.pub.sig";
-
-    if (!std::filesystem::exists(pubPath)) {
-        auto dl = httpDownload(info.officialPub, pubPath, nullptr);
+    auto certPath = keyDir / (domain + ".crt");
+    if (info.cert.empty()) {
+        return Error(ErrorCode::InvalidField,
+                     "域索引缺少 cert: " + domain);
+    }
+    if (!std::filesystem::exists(certPath)) {
+        auto dl = httpDownload(info.cert, certPath, nullptr);
         if (!dl) return dl.error();
     }
-    if (!std::filesystem::exists(pubSigPath)) {
-        auto dl = httpDownload(info.officialPubSig, pubSigPath, nullptr);
-        if (!dl) return dl.error();
-    }
 
-    // 2. 用主仓库官方公钥验证域官方公钥
-    auto ok = verifySignature(officialPubKey_, pubSigPath, pubPath);
-    if (!ok) return ok.error();
-    if (!*ok) {
-        return Error(ErrorCode::ChecksumMismatch,
-                     "域官方公钥签名无效: " + domain);
-    }
+    auto domainCert = loadCertificateFile(certPath);
+    if (!domainCert) return domainCert.error();
 
-    domainPubKeys_[domain] = pubPath;
+    // 2. 用官方证书验证域证书
+    auto verified = verifyCertificate(*domainCert, officialCert_,
+                                      "hpm://domain/" + domain, true);
+    if (!verified) return verified.error();
+
+    domainCertPaths_[domain] = certPath;
 
     // 3. 下载域索引 + 签名
     auto text = httpGet(info.index, progress);
@@ -429,8 +432,8 @@ Result<const Index*> RegistryClient::fetchDomainIndex(
         f << *sigText;
     }
 
-    // 4. 用域官方公钥验证域索引
-    ok = verifySignature(pubPath, tmpSig, tmpIndex);
+    // 4. 用域证书验证域索引
+    auto ok = verifySignatureWithCert(certPath, tmpSig, tmpIndex);
     if (!ok) return ok.error();
     if (!*ok) {
         return Error(ErrorCode::ChecksumMismatch,
@@ -480,12 +483,14 @@ Result<std::filesystem::path> RegistryClient::ensurePackage(
                      "离线模式，包未缓存: " + fullName + "@" + version);
     }
 
-    // 选索引
+    // 选索引。mainIdx 必须活到 ensurePackage 结束，否则 info 会悬空。
+    Index mainIdxStorage;
     const Index* idx = nullptr;
     if (domain.empty()) {
         auto mainIdx = fetchIndex(progress);
         if (!mainIdx) return mainIdx.error();
-        idx = &*mainIdx;
+        mainIdxStorage = std::move(*mainIdx);
+        idx = &mainIdxStorage;
     } else {
         auto domIdx = fetchDomainIndex(domain, progress);
         if (!domIdx) return domIdx.error();
@@ -543,27 +548,35 @@ Result<std::filesystem::path> RegistryClient::ensurePackage(
 // 开发者公钥
 // ─────────────────────────────────────────────
 
-Result<std::filesystem::path> RegistryClient::fetchAndVerifyDeveloperKey(
+Result<std::filesystem::path> RegistryClient::fetchAndVerifyDeveloperCert(
     const std::string& domain,
     const std::string& devName) {
 
     std::string key = domain + "/" + devName;
-    auto it = developerKeys_.find(key);
-    if (it != developerKeys_.end()) return it->second;
+    auto it = developerCertPaths_.find(key);
+    if (it != developerCertPaths_.end()) return it->second;
 
+    Index mainIdxStorage;
     const Index* idx = nullptr;
-    std::filesystem::path verifyKey;
+    CertificatePtr issuer;
 
     if (domain.empty()) {
         auto mainIdx = fetchIndex();
         if (!mainIdx) return mainIdx.error();
-        idx = &*mainIdx;
-        verifyKey = officialPubKey_;
+        mainIdxStorage = std::move(*mainIdx);
+        idx = &mainIdxStorage;
+        issuer = officialCert_;
     } else {
         auto domIdx = fetchDomainIndex(domain);
         if (!domIdx) return domIdx.error();
         idx = *domIdx;
-        verifyKey = domainPubKeys_[domain];
+        auto issuerPath = domainCertPaths_.find(domain);
+        if (issuerPath == domainCertPaths_.end()) {
+            return Error(ErrorCode::Internal, "域证书缓存缺失: " + domain);
+        }
+        auto cert = loadCertificateFile(issuerPath->second);
+        if (!cert) return cert.error();
+        issuer = *cert;
     }
 
     auto dit = idx->developers.find(devName);
@@ -574,32 +587,30 @@ Result<std::filesystem::path> RegistryClient::fetchAndVerifyDeveloperKey(
     }
 
     const auto& info = dit->second;
+    if (info.cert.empty()) {
+        return Error(ErrorCode::InvalidField,
+                     "开发者缺少 cert: " + devName);
+    }
 
     auto keyDir = config_.cacheDir / "cache" / "keys" /
                   (domain.empty() ? "main" : domain) / devName;
     std::filesystem::create_directories(keyDir);
 
-    auto pubPath = keyDir / (devName + ".pub");
-    auto sigPath = keyDir / (devName + ".pub.sig");
-
-    if (!std::filesystem::exists(pubPath)) {
-        auto dl = httpDownload(info.pub, pubPath, nullptr);
-        if (!dl) return dl.error();
-    }
-    if (!std::filesystem::exists(sigPath)) {
-        auto dl = httpDownload(info.pubSig, sigPath, nullptr);
+    auto certPath = keyDir / (devName + ".crt");
+    if (!std::filesystem::exists(certPath)) {
+        auto dl = httpDownload(info.cert, certPath, nullptr);
         if (!dl) return dl.error();
     }
 
-    auto ok = verifySignature(verifyKey, sigPath, pubPath);
-    if (!ok) return ok.error();
-    if (!*ok) {
-        return Error(ErrorCode::ChecksumMismatch,
-                     "开发者公钥签名无效: " + devName);
-    }
+    auto cert = loadCertificateFile(certPath);
+    if (!cert) return cert.error();
 
-    developerKeys_[key] = pubPath;
-    return pubPath;
+    auto verified = verifyCertificate(*cert, issuer,
+                                      "hpm://developer/" + devName, false);
+    if (!verified) return verified.error();
+
+    developerCertPaths_[key] = certPath;
+    return certPath;
 }
 
 Status RegistryClient::verifyPackageSignature(
@@ -620,10 +631,10 @@ Status RegistryClient::verifyPackageSignature(
         if (!dl) return dl.error();
     }
 
-    auto pub = fetchAndVerifyDeveloperKey(domain, devName);
-    if (!pub) return pub.error();
+    auto cert = fetchAndVerifyDeveloperCert(domain, devName);
+    if (!cert) return cert.error();
 
-    auto ok = verifySignature(*pub, sigPath, tarball);
+    auto ok = verifySignatureWithCert(*cert, sigPath, tarball);
     if (!ok) return ok.error();
     if (!*ok) {
         return Error(ErrorCode::ChecksumMismatch,
