@@ -428,3 +428,22 @@ GUI 按 `features` 启用功能；旧 host 没有 `features` 时按 v1 降级。
 - stdout 只用于协议；日志写 stderr。
 - 未知 device/cmd 返回结构化错误。
 - 设备插件事件与响应可能交错，按 `type`/`device` 分发。
+
+---
+
+## 8. USB CDC 设备
+
+USB CDC 设备的虚拟串口由设备插件在宿主侧创建为 PTY：
+
+```text
+~/.hpm/usb-cdc/serial.tty -> /dev/pts/N
+```
+
+在 `device.list` / `device.describe` 中它会以普通设备出现，`port` 通道是只读字符串，
+值就是 PTY 路径。JSON 协议没有 `usb.read` / `usb.write`：
+
+- 串口数据请直接打开该 PTY 文件；
+- JSON 只用于设备元数据、状态和 `hpm debug` 控制；
+- 不需要 root，也不会创建 `/dev/ttyACM0`。
+
+插件 ABI 当前是 `2`；设备插件需要用 `core/include/hpm/debug/plugin.h` 重新编译。

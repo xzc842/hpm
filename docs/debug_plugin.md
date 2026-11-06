@@ -415,3 +415,70 @@ hpm debug --json --isa build/lib/libmcus_isa_8051.so \
 - 缺少 `debug/debug.c` 默认直接报错。
 - `--allow-missing-debug` 可跳过。
 - `--host-cc` 指定宿主机编译器。
+
+---
+
+## 10. USB CDC 虚拟串口示例
+
+`usb_cdc-ch552` 的 `debug/debug.c` 提供一个用户态 PTY 虚拟 USB CDC：
+
+```text
+~/.hpm/usb-cdc/serial.tty -> /dev/pts/N
+```
+
+启动：
+
+```bash
+hpm --cache-dir ~/.hpm -C example/ch552-cdc debug \
+  --json \
+  --model debug/mcus/models/ch552g.json \
+  --config debug/mcus/config/example.toml
+```
+
+然后打开 `~/.hpm/usb-cdc/serial.tty`：
+
+```bash
+picocom -b 115200 ~/.hpm/usb-cdc/serial.tty
+```
+
+特点：
+
+- 不需要 root；
+- 不是内核 USB gadget，不会创建 `/dev/ttyACM0`；
+- 通过 `UsbToken::Setup/In/Out` 与 mcus 固件完成 CDC 枚举；
+- PTY 输入通过 `usb_send(..., UsbToken::Out, ...)` 写入 mcus；
+- 固件 EP2 IN 数据通过 `HPM_DEBUG_EVENT_USB` 回到插件，再写入 PTY。
+
+设备 UI：
+
+```json
+{"$ui":{"schema":"hpm-ui/1","role":"output","title":"USB CDC",
+  "channels":[{"id":"port","name":"Serial Port","direction":"out",
+               "type":"string","readonly":true}],
+  "state":{"port":"/home/.../.hpm/usb-cdc/serial.tty"}}}
+```
+
+外部 JSON 程序可以看到 `port` 通道，但收发串口数据需要打开这个文件，不走 JSON 协议。
+
+---
+
+## 11. 插件 ABI 变更
+
+当前：
+
+```c
+#define HPM_DEBUG_ABI_VERSION 2
+```
+
+ABI 2 相比 ABI 1：
+
+- `HpmDebugEventType` 新增 `HPM_DEBUG_EVENT_USB`；
+- 新增 `HpmDebugUsbEvent`；
+- `HpmDebugHostApi` 追加：
+  - `bus_send`
+  - `usb_send`
+- `bus_write` 现在用于 SPI 响应。
+
+ABI 2 的 `HpmDebugHostApi` 布局和事件 union 都变了，旧的独立编译插件 `.so`
+不能继续使用，必须用当前头文件重新编译。`hpm debug` 会自动重新编译驱动包里的
+`debug/debug.c`，但外部手工编译的插件需要自行重建。
