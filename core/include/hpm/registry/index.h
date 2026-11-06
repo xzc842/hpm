@@ -41,12 +41,19 @@ struct DomainInfo {
 // 索引里的一个包版本
 struct PackageVersion {
     std::string kind;       // "driver" / "chip"
+    std::string chip;       // 芯片名
     std::string developer;  // 开发者名
     std::string url;        // tarball URL
     std::string sigUrl;     // 包签名 URL
     std::string sha256;
     uint64_t    size = 0;
     std::string license;
+    std::string description;
+
+    // 详细信息（紧凑 JSON，供 hpm search 输出）
+    std::string configJson;
+    std::string providesJson;
+    std::string pinsJson;
 
     // requires 简版（key -> type），用于依赖递归
     std::map<std::string, std::string> requirements;

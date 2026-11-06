@@ -992,6 +992,26 @@ mcus 源码通过 git submodule `debug/mcus` 引入，由 `debug/CMakeLists.txt`
 
 ## 7. 数据流
 
+### `hpm search`
+
+```
+search <name>[@version]
+    ↓ RegistryConfig::load
+RegistryClient
+    ↓ fetchIndex / fetchDomainIndex
+Index
+    ↓ findLatestVersion / find
+PackageVersion
+    ↓
+终端详情 / --json
+```
+
+- 不传版本：取最新版本；
+- 传 `name@version`：只查该版本；
+- 支持 `domain/name`；
+- 没有精确包名时做前缀/子串/编辑距离相似匹配，最多列 20 个；
+- 默认验证索引证书链，`--skip-signature` 仅供开发。
+
 ### `hpm sync`
 
 ```
