@@ -115,6 +115,7 @@ hpm/
 | `HPM_FILE_DRIVER_STATE` | `driver.json` |
 | `HPM_FILE_OFFICIAL_CERT` | `official.crt` |
 | `HPM_FILE_OFFICIAL_CERT_FP` | `official.crt.fingerprint` |
+| `revoke.json` | 证书吊销列表，7 天有效 |
 | `HPM_FILE_MANIFEST` | `manifest.json` |
 | `HPM_FILE_CHIP` | `chip.json` |
 | `HPM_FILE_DRIVER_H` | `driver.h` |

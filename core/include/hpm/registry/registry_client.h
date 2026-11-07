@@ -19,6 +19,7 @@
 
 #include <hpm/registry/certificate.h>
 #include <hpm/registry/index.h>
+#include <hpm/registry/revoke.h>
 #include <hpm/result.h>
 
 #include <filesystem>
@@ -87,15 +88,26 @@ private:
     Status extractTarball(const std::filesystem::path& tarball,
                           const std::filesystem::path& destDir);
 
+    // 吊销列表：下载/缓存/验签，TTL 7 天
+    Result<RevocationList> loadRevocation(
+        const std::string& baseUrl,
+        const std::filesystem::path& certPath);
+    bool isRevoked(const CertificatePtr& cert,
+                   const std::string& domain) const;
+
     RegistryConfig config_;
     Index          cachedIndex_;
     bool           indexLoaded_ = false;
 
     CertificatePtr officialCert_;
+    std::filesystem::path officialCertPath_;
+    RevocationList mainRevoke_;
+    bool mainRevokeLoaded_ = false;
 
     // 域缓存
     std::map<std::string, Index>                  domainIndexes_;
     std::map<std::string, std::filesystem::path>  domainCertPaths_;
+    std::map<std::string, RevocationList>         domainRevokes_;
 
     std::map<std::string, std::filesystem::path>  developerCertPaths_;
 };

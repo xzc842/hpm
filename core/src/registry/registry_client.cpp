@@ -25,12 +25,20 @@
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
+#include <cctype>
+#include <iostream>
 #include <sstream>
 #include "hpm/config.h"
 
 namespace hpm::registry {
 namespace fs = std::filesystem;
 namespace {
+
+std::string urlDir(const std::string& url) {
+    auto slash = url.find_last_of('/');
+    return slash == std::string::npos ? std::string() : url.substr(0, slash);
+}
+
 
 size_t writeToString(void* ptr, size_t size, size_t nmemb, void* userdata) {
     auto* out = static_cast<std::string*>(userdata);
@@ -259,6 +267,97 @@ Result<void> RegistryClient::httpDownload(
 }
 
 // ─────────────────────────────────────────────
+// 吊销列表
+// ─────────────────────────────────────────────
+
+Result<RevocationList> RegistryClient::loadRevocation(
+    const std::string& baseUrl,
+    const std::filesystem::path& certPath) {
+
+    if (config_.offline) {
+        std::cerr << "warning: 您处于离线模式，无法获取安全更新\n";
+        return RevocationList{};
+    }
+
+    if (baseUrl.empty()) {
+        return Error(ErrorCode::InvalidField, "吊销列表 baseUrl 为空");
+    }
+
+    const std::string url = baseUrl + "/revoke.json";
+    auto text = httpGet(url);
+    if (!text) {
+        return Error(ErrorCode::NetworkError,
+                     "吊销列表拉取失败: " + text.error().message());
+    }
+
+    auto sigText = httpGet(url + ".sig");
+    if (!sigText) {
+        return Error(ErrorCode::NetworkError,
+                     "吊销列表签名拉取失败: " +
+                         sigText.error().message());
+    }
+
+    const fs::path tmpDir = config_.cacheDir / "cache" / "tmp";
+    std::error_code ec;
+    fs::create_directories(tmpDir, ec);
+    const fs::path tmpJson = tmpDir / "revoke.json.tmp";
+    const fs::path tmpSig = tmpDir / "revoke.json.sig.tmp";
+    {
+        std::ofstream f(tmpJson);
+        if (!f) return Error(ErrorCode::IoError, "无法写 revoke.json 临时文件");
+        f << *text;
+    }
+    {
+        std::ofstream f(tmpSig);
+        if (!f) return Error(ErrorCode::IoError, "无法写 revoke 签名临时文件");
+        f << *sigText;
+    }
+
+    auto ok = verifySignatureWithCert(certPath, tmpSig, tmpJson);
+    if (!ok) {
+        fs::remove(tmpJson);
+        fs::remove(tmpSig);
+        return ok.error();
+    }
+    if (!*ok) {
+        fs::remove(tmpJson);
+        fs::remove(tmpSig);
+        return Error(ErrorCode::ChecksumMismatch,
+                     "吊销列表签名无效: " + url);
+    }
+
+    auto parsed = parseRevocation(*text);
+    if (!parsed) {
+        fs::remove(tmpJson);
+        fs::remove(tmpSig);
+        return parsed.error();
+    }
+    if (!parsed->fresh(7)) {
+        fs::remove(tmpJson);
+        fs::remove(tmpSig);
+        return Error(ErrorCode::ChecksumMismatch,
+                     "吊销列表已超过 7 天有效期: " + url);
+    }
+
+    fs::remove(tmpJson);
+    fs::remove(tmpSig);
+    return *parsed;
+}
+
+bool RegistryClient::isRevoked(const CertificatePtr& cert,
+                               const std::string& domain) const {
+    if (!cert) return false;
+    if (mainRevokeLoaded_ && mainRevoke_.contains(cert)) return true;
+    if (!domain.empty()) {
+        auto it = domainRevokes_.find(domain);
+        if (it != domainRevokes_.end() && it->second.contains(cert)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// ─────────────────────────────────────────────
 // 主索引
 // ─────────────────────────────────────────────
 
@@ -277,6 +376,7 @@ Result<Index> RegistryClient::fetchIndex(DownloadProgress progress) {
         if (!cert) return cert.error();
         officialCert_ = *cert;
         officialCertPath = *certPath;
+        officialCertPath_ = *certPath;
     }
 
     std::string lastError;
@@ -325,6 +425,20 @@ Result<Index> RegistryClient::fetchIndex(DownloadProgress progress) {
                 lastError = "索引签名无效（可能被篡改）";
                 continue;
             }
+        }
+
+        if (!config_.skipSignature) {
+            auto rev = loadRevocation(baseUrl, officialCertPath_);
+            if (!rev) {
+                lastError = "吊销列表加载失败: " + rev.error().message();
+                continue;
+            }
+            if (rev->contains(officialCert_)) {
+                lastError = "官方证书已被吊销";
+                continue;
+            }
+            mainRevoke_ = std::move(*rev);
+            mainRevokeLoaded_ = true;
         }
 
         auto idx = parseIndex(*text, baseUrl);
@@ -405,7 +519,26 @@ Result<const Index*> RegistryClient::fetchDomainIndex(
                                       "hpm://domain/" + domain, true);
     if (!verified) return verified.error();
 
+    if (isRevoked(*domainCert, "")) {
+        return Error(ErrorCode::PermissionDenied,
+                     "域证书已被官方吊销: " + domain);
+    }
+
     domainCertPaths_[domain] = certPath;
+
+    // 2.5 下载并验证域吊销列表
+    auto domainBase = urlDir(info.index);
+    auto domainRev = loadRevocation(domainBase, certPath);
+    if (!domainRev) {
+        return Error(ErrorCode::ChecksumMismatch,
+                     "域吊销列表加载失败: " +
+                         domainRev.error().message());
+    }
+    if (domainRev->contains(*domainCert)) {
+        return Error(ErrorCode::PermissionDenied,
+                     "域证书已被域吊销列表吊销: " + domain);
+    }
+    domainRevokes_[domain] = std::move(*domainRev);
 
     // 3. 下载域索引 + 签名
     auto text = httpGet(info.index, progress);
@@ -475,6 +608,33 @@ Result<std::filesystem::path> RegistryClient::ensurePackage(
     auto pkgDir = baseDir / (name + "-" + version);
 
     if (std::filesystem::exists(pkgDir)) {
+        // 在线时即使包已缓存，也要重新检查开发者证书是否被吊销。
+        if (!config_.offline && !config_.skipSignature) {
+            Index mainIdxStorage;
+            const Index* idx = nullptr;
+            if (domain.empty()) {
+                auto mainIdx = fetchIndex(progress);
+                if (mainIdx) {
+                    mainIdxStorage = std::move(*mainIdx);
+                    idx = &mainIdxStorage;
+                }
+            } else {
+                auto domIdx = fetchDomainIndex(domain, progress);
+                if (domIdx) idx = *domIdx;
+            }
+            if (idx) {
+                auto pit = idx->packages.find(name);
+                if (pit != idx->packages.end()) {
+                    auto vit = pit->second.versions.find(version);
+                    if (vit != pit->second.versions.end() &&
+                        !vit->second.developer.empty()) {
+                        auto cert = fetchAndVerifyDeveloperCert(
+                            domain, vit->second.developer);
+                        if (!cert) return cert.error();
+                    }
+                }
+            }
+        }
         return pkgDir;
     }
 
@@ -608,6 +768,12 @@ Result<std::filesystem::path> RegistryClient::fetchAndVerifyDeveloperCert(
     auto verified = verifyCertificate(*cert, issuer,
                                       "hpm://developer/" + devName, false);
     if (!verified) return verified.error();
+
+    if (isRevoked(*cert, domain)) {
+        return Error(ErrorCode::PermissionDenied,
+                     "开发者证书已被吊销: " +
+                         (domain.empty() ? devName : domain + "/" + devName));
+    }
 
     developerCertPaths_[key] = certPath;
     return certPath;

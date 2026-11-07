@@ -52,6 +52,7 @@ Result<void> verifyRootCertificate(const CertificatePtr& root);
 // 证书公钥
 PkeyPtr certificatePublicKey(const CertificatePtr& cert);
 
+std::string certificateSerial(const CertificatePtr& cert);
 std::string certificateFingerprint(const CertificatePtr& cert);
 std::string certificateSubject(const CertificatePtr& cert);
 std::string certificateIssuer(const CertificatePtr& cert);

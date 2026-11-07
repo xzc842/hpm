@@ -39,6 +39,7 @@ add_library(hpm_core STATIC
     src/registry/index.cpp
     src/registry/registry_client.cpp
     src/registry/certificate.cpp
+    src/registry/revoke.cpp
     src/registry/signature.cpp
     src/registry/official_cert.cpp
 )
