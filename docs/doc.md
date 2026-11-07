@@ -115,6 +115,7 @@ hpm/
 | `HPM_FILE_DRIVER_STATE` | `driver.json` |
 | `HPM_FILE_OFFICIAL_CERT` | `official.crt` |
 | `HPM_FILE_OFFICIAL_CERT_FP` | `official.crt.fingerprint` |
+| `revoke.json` | 证书吊销列表，7 天有效 |
 | `HPM_FILE_MANIFEST` | `manifest.json` |
 | `HPM_FILE_CHIP` | `chip.json` |
 | `HPM_FILE_DRIVER_H` | `driver.h` |
@@ -889,9 +890,13 @@ mcus 源码通过 git submodule `debug/mcus` 引入，由 `debug/CMakeLists.txt`
 - 根据 `driver.json` 找到用户设备的驱动包；
 - 检查 `debug/debug.c`，编译成 `build/hpm-debug/plugins/*.so`；
 - `dlopen` 插件并按设备 `create` 实例；
-- 消费 mcus 统一 `DebugEventStream`（MMIO/PIN/BUS/IRQ）；
+- 消费 mcus 统一 `DebugEventStream`（MMIO/PIN/BUS/IRQ/USB）；
+- `bus_router`：Bus/USB 事件广播、`in` 环发送、SPI 默认 MISO；
+- `pin_router`：引脚订阅、变化合并和批量推送；
+- `host_utils`：引脚名归一化、状态名、日志级别等；
 - 提供 CLI REPL 和 `--json` JSON Lines 协议；
-- 通过 mcus 共享内存执行 pause/resume/step/reset/断点/引脚/中断控制。
+- 通过 mcus 共享内存执行 pause/resume/step/reset/断点/引脚/中断控制；
+- 设备插件 ABI 当前为 `2`，支持 `bus_send` / `usb_send`。
 
 插件 ABI 见 `core/include/hpm/debug/plugin.h`，规范见 `docs/debug_plugin.md`，
 外部协议见 `docs/debug_protocol.md`。

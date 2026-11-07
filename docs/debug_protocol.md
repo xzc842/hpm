@@ -428,3 +428,35 @@ GUI 按 `features` 启用功能；旧 host 没有 `features` 时按 v1 降级。
 - stdout 只用于协议；日志写 stderr。
 - 未知 device/cmd 返回结构化错误。
 - 设备插件事件与响应可能交错，按 `type`/`device` 分发。
+
+---
+
+## 8. USB CDC 设备(例)
+
+USB CDC 设备作为**输入设备**出现，不再增加输出设备：
+
+```json
+{"role":"input","channels":[
+  {"id":"tx","direction":"in","type":"string","widget":"textarea"},
+  {"id":"send","direction":"in","type":"bool","widget":"button"}
+]}
+```
+
+发送：
+
+```json
+{"device":"serial","data":{"cmd":"set","channel":"tx","value":"hello\n"}}
+{"device":"serial","data":{"cmd":"set","channel":"send","value":true}}
+```
+
+或：
+
+```json
+{"device":"serial","data":{"cmd":"invoke","channel":"send"}}
+```
+
+如果 `tx` 值包含 `\n` 或 `\r`，插件会自动发送，不需要额外的 `send`。通过 send 动作发送时，如果末尾没有换行，插件会自动补 `\n`，方便 shell 类固件处理。
+发送内容会以 `TX: ...` 日志输出；固件返回的串口数据由插件通过 `log` 事件写入宿主日志窗口，不通过 `$state.rx`。
+PTY 路径（`~/.hpm/usb-cdc/serial.tty`）在启动日志中打印，仍可直接打开。
+
+插件 ABI 当前是 `2`；设备插件需要用 `core/include/hpm/debug/plugin.h` 重新编译。

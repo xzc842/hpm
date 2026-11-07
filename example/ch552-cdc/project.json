@@ -1,18 +1,18 @@
 {
-  "mcu": "ch552g",
   "devices": {
     "serial": {
-      "driver": "ch552_usb_cdc",
       "config": {
-        "usb_vid": "0x1209",
-        "usb_pid": "0x0001",
         "usb_device_version": "0x0100",
-        "usb_max_power_ma": "100",
+        "usb_interface": "CDC",
         "usb_manufacturer": "XZC",
+        "usb_max_power_ma": "100",
+        "usb_pid": "0x0001",
         "usb_product": "CH552 TEST CDC",
         "usb_serial": "0001",
-        "usb_interface": "CDC"
-      }
+        "usb_vid": "0x1209"
+      },
+      "driver": "ch552_usb_cdc"
     }
-  }
+  },
+  "mcu": "ch552g"
 }

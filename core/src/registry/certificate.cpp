@@ -228,6 +228,20 @@ PkeyPtr certificatePublicKey(const CertificatePtr& cert) {
     return PkeyPtr(X509_get_pubkey(cert.get()), PkeyDeleter{});
 }
 
+std::string certificateSerial(const CertificatePtr& cert) {
+    if (!cert) return "";
+    const ASN1_INTEGER* serial = X509_get_serialNumber(cert.get());
+    if (!serial) return "";
+    BIGNUM* bn = ASN1_INTEGER_to_BN(serial, nullptr);
+    if (!bn) return "";
+    char* hex = BN_bn2hex(bn);
+    BN_free(bn);
+    if (!hex) return "";
+    std::string out(hex);
+    OPENSSL_free(hex);
+    return out;
+}
+
 std::string certificateFingerprint(const CertificatePtr& cert) {
     if (!cert) return "";
     unsigned char digest[EVP_MAX_MD_SIZE];

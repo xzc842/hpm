@@ -24,6 +24,7 @@ add_executable(hpm_tests
     unit/test_generator.cpp
     unit/test_toolchain.cpp
     unit/test_bus_router.cpp
+    unit/test_revoke.cpp
     ../debug/host/src/bus_router.cpp
 )
 

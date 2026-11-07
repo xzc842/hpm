@@ -215,3 +215,54 @@ export HPM_REGISTRY=file:///path/to/index.json
 ```
 
 生产环境不要设置这些变量。
+
+---
+
+## 8. 证书吊销列表
+
+仓库根可以放置：
+
+```text
+revoke.json
+revoke.json.sig
+```
+
+`revoke.json` 由仓库的 official/域私钥签名，客户端用对应证书验证签名。主仓库和域仓库的吊销列表取并集。
+
+格式：
+
+```json
+{
+  "schema": 1,
+  "updatedAt": "2026-11-07T06:16:37Z",
+  "issuer": {
+    "san": "hpm://official",
+    "certSha256": "AA:BB:..."
+  },
+  "entries": [
+    {
+      "serial": "15CB48DE0CB5C3BAAE4C2BADFE5F1F81",
+      "kind": "developer",
+      "san": "hpm://developer/xzc-test",
+      "certSha256": "FD:D1:...",
+      "revokedAt": "2026-11-07T06:02:27Z",
+      "reason": "ceased"
+    }
+  ]
+}
+```
+
+客户端行为：
+
+1. 下载 `index.json` 同目录的 `revoke.json` 和 `.sig`；
+2. 用验证索引的同一张 official/域证书验签；
+3. **每次加载仓库都重新拉取** `revoke.json` 和 `.sig`，不使用旧缓存跳过检查；
+4. `revoke.json` 或签名不存在时**拒绝加载该仓库**；
+5. 签名无效时拒绝该仓库；
+6. 按证书序列号或证书 SHA-256 匹配；
+7. 先验证证书链和 SAN，再查吊销，再验证包签名；
+8. **`updatedAt` 超过 7 天的列表视为过期，拒绝加载该仓库**；
+9. 离线模式下无法拉取吊销列表，但**不拒绝加载**：打印警告
+   `您处于离线模式，无法获取安全更新`，继续使用本地包；此模式下无法执行吊销检查。
+
+7 天有效期只约束吊销列表本身，不改变证书自身的 `notBefore`/`notAfter`。

@@ -10,7 +10,7 @@
 
 ## 1. 消息总览
 
-调试程序与宿主之间只有四类出站 JSON 保留键，和五类入站命令。
+调试程序与宿主之间只有五类出站 JSON 保留键，和五类入站命令。
 
 | 方向 | JSON 顶层键 | 用途 |
 |---|---|---|
@@ -18,6 +18,7 @@
 | 调试程序 → 宿主 | `$state` | 上报通道当前值，增量更新 |
 | 调试程序 → 宿主 | `$event` | 上报一次性事件 |
 | 调试程序 → 宿主 | `$error` | 上报设备错误 |
+| 调试程序 → 宿主 | `$html` | 提供自定义 HTML 面板，用于特殊展示和输入 |
 | 宿主 → 调试程序 | `cmd: "describe"` | 请求重新发送 `$ui` |
 | 宿主 → 调试程序 | `cmd: "set"` | 设置一个或多个通道 |
 | 宿主 → 调试程序 | `cmd: "invoke"` | 触发动作型通道 |
@@ -348,6 +349,150 @@
 
 ---
 
+## 5.5 自定义 HTML 面板 `$html`
+
+当标准通道类型无法表达设备形态时，调试程序可以直接提供一块 HTML。
+GUI 会把它放进 `sandbox="allow-scripts"` 的 iframe 中渲染，CSS 和脚本与主界面隔离。
+
+### 5.5.1 消息结构
+
+```json
+{
+  "$html": {
+    "id": "wave-panel",
+    "title": "波形面板",
+    "placement": "both",
+    "height": 260,
+    "html": "<canvas id=\"wave\"></canvas><button onclick=\"hpm.invoke('refresh')\">刷新</button>",
+    "css": "#wave{width:100%;height:220px;background:#111;border-radius:4px}"
+  }
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `id` | string | 是 | 设备内唯一，同一 `id` 的新消息会替换旧面板 |
+| `title` | string | 否 | 面板标题，缺省用设备名 |
+| `placement` | string | 否 | `output` / `input` / `both`，默认 `output` |
+| `height` | number | 否 | iframe 高度，60–1200，默认 220 |
+| `html` | string | 是 | HTML 片段，最长 256 KiB |
+| `css` | string | 否 | 追加到面板内的 CSS，最长 64 KiB |
+| `remove` | boolean | 否 | `true` 时删除该 `id` 的面板 |
+
+规则：
+
+- `$html` 是普通设备 JSON 的保留键，宿主会原样转发，不需要 HPM 改接口；
+- 可以在 `create` 中发送，也可以随时发送；不要在 `describe` 回调里发送（宿主会丢弃该阶段的普通 JSON）；
+- 同一设备可以有多个 `$html` 块，用 `id` 区分；
+- 面板内容变化时重新发送同一 `id`；
+- `$html` 适合静态布局/初始化，频繁变化的数据请用 `$state` + 面板内 `hpm.onState`，避免反复重建 iframe；
+- `placement` 只决定放在输入区、输出区还是两处都放；
+- HTML 运行在无 `allow-same-origin` 的沙箱 iframe 中，不能访问父页面 DOM；
+- 不建议在 HTML 中写 `</script>` 字符串，按普通 HTML 片段组织即可。
+
+### 5.5.2 面板内可用的 `hpm` 对象
+
+GUI 会在 iframe 内注入：
+
+```json
+{
+  "device": "led",
+  "send": "function(payload)",
+  "set": "function(channel, value)",
+  "invoke": "function(channel)",
+  "raw": "function(data)",
+  "resize": "function(height)",
+  "log": "function(message, level)",
+  "onState": "function(values, message)"
+}
+```
+
+示例：
+
+```html
+<button onclick="hpm.set('power', true)">开灯</button>
+<button onclick="hpm.invoke('press')">按下</button>
+<button onclick="hpm.raw({cmd:'get', channels:['power']})">查询</button>
+<button onclick="hpm.resize(360)">加高</button>
+<script>
+  hpm.onState = function (values) {
+    document.getElementById("wave").dataset.power = values.power;
+  };
+</script>
+```
+
+面板通过 `postMessage` 发给 GUI 的 JSON 必须带 `hpm: true`：
+
+```json
+{"hpm":true,"cmd":"set","channel":"power","value":true}
+{"hpm":true,"cmd":"invoke","channel":"press"}
+{"hpm":true,"cmd":"raw","data":{"cmd":"get","channels":["power"]}}
+{"hpm":true,"cmd":"resize","height":360}
+{"hpm":true,"cmd":"log","level":"info","message":"panel ready"}
+```
+
+### 5.5.3 GUI 推给面板的状态
+
+设备状态变化时，GUI 会向所有属于该设备的 HTML 面板发送：
+
+```json
+{"hpm":true,"type":"state","device":"led","values":{"power":true}}
+```
+
+面板可以设置 `hpm.onState(values)`，也可以监听：
+
+```html
+<script>
+  window.addEventListener("hpm-state", function (event) {
+    console.log(event.detail.values);
+  });
+</script>
+```
+
+### 5.5.4 完整 JSON 示例
+
+```json
+{
+  "$html": {
+    "id": "scope",
+    "title": "示波器",
+    "placement": "both",
+    "height": 300,
+    "css": "body{background:#101318;color:#c7ccd4}#scope{width:100%;height:250px;display:block}",
+    "html": "<canvas id=\"scope\"></canvas><button onclick=\"hpm.invoke('trigger')\">触发</button>",
+    "remove": false
+  }
+}
+```
+
+面板内的 JS：
+
+```html
+<script>
+  const canvas = document.getElementById("scope");
+  const ctx = canvas.getContext("2d");
+  canvas.width = canvas.clientWidth;
+  canvas.height = canvas.clientHeight;
+
+  function draw(values) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = "#16baaa";
+    ctx.beginPath();
+    (values.samples || []).forEach(function (v, i) {
+      const x = (i / Math.max(1, values.samples.length - 1)) * canvas.width;
+      const y = canvas.height - (Number(v) || 0) * canvas.height;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  }
+
+  hpm.onState = function (values) { draw(values); };
+</script>
+```
+
+---
+
 ## 6. 宿主发给调试程序的命令
 
 宿主会把外部请求的 `data` 原样序列化后交给调试程序；`describe` 是宿主直接生成的请求。
@@ -444,6 +589,23 @@
 {"device":"led","type":"error","seq":14,"time":579,
  "error":{"code":"i2c_timeout","message":"I2C 无响应","channel":"brightness"}}
 ```
+
+`$html`：
+
+```json
+{"$html":{"id":"scope","title":"示波器","placement":"both","height":260,
+          "html":"<canvas id=\"scope\"></canvas>"}}
+```
+
+宿主输出（按普通设备 JSON 透传）：
+
+```json
+{"device":"led","type":"json","seq":15,"time":580,
+ "data":{"$html":{"id":"scope","title":"示波器","placement":"both",
+                  "height":260,"html":"<canvas id=\"scope\"></canvas>"}}}
+```
+
+GUI 会识别 `data.$html` 并渲染自定义面板；调试程序不需要自己拼接 `device`、`time`、`seq`。
 
 ---
 
@@ -679,6 +841,31 @@
 
 GUI 找不到对应控件时必须显示 JSON 编辑器/只读 JSON，而不是报错。
 
+### 8.8 自定义 HTML 面板
+
+```json
+{
+  "$html": {
+    "id": "custom-io",
+    "title": "自定义面板",
+    "placement": "both",
+    "height": 240,
+    "html": "<button onclick=\"hpm.set('power', true)\">开</button><button onclick=\"hpm.set('power', false)\">关</button><div id=\"state\"></div>",
+    "css": "button{margin:2px;padding:4px 8px}#state{margin-top:6px;color:#16baaa}"
+  }
+}
+```
+
+面板内脚本读取状态：
+
+```html
+<script>
+  hpm.onState = function (values) {
+    document.getElementById("state").textContent = "power = " + values.power;
+  };
+</script>
+```
+
 ---
 
 ## 9. 校验与限制
@@ -695,7 +882,12 @@ GUI 找不到对应控件时必须显示 JSON 编辑器/只读 JSON，而不是�
 | `$state` 值 | 必须符合通道 `type` |
 | `$event` | 必须含 `channel` 或 `name` |
 | `$error.code` | 非空字符串 |
-| 单条 JSON | 建议不超过 64 KiB |
+| `$html.id` | 设备内唯一；同 `id` 覆盖旧面板 |
+| `$html.placement` | `input` / `output` / `both` |
+| `$html.html` | 字符串，最长 256 KiB |
+| `$html.css` | 字符串，最长 64 KiB |
+| `$html.height` | 60–1200，默认 220 |
+| 单条 JSON | 建议不超过 64 KiB；`$html` 单条可到 256 KiB |
 | JSON 编码 | UTF-8，单行 JSON object |
 
 违反上述要求时，宿主/ GUI 应忽略该条消息或降级处理，不能崩溃。
@@ -715,5 +907,7 @@ GUI 找不到对应控件时必须显示 JSON 编辑器/只读 JSON，而不是�
 - [ ] 收到 `set` / `invoke` / `get` 时能正确响应。
 - [ ] 能处理 `describe` 并重复发送 `$ui`。
 - [ ] 错误通过 `$error` 上报，致命错误标记 `fatal=true`。
+- [ ] 特殊界面通过 `$html` 发送，`id` 唯一，更新用同一 `id`，删除用 `remove:true`。
+- [ ] 自定义面板只使用 `hpm.set/invoke/raw/resize/log` 回传输入，不依赖父页面 DOM。
 - [ ] 不对 `device` / `time` / `seq` / `type` 等宿主字段做假设。
 - [ ] 未识别命令返回后不崩溃。
