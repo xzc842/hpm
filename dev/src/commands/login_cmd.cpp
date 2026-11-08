@@ -28,6 +28,7 @@
 #include <ctime>
 #include <iostream>
 #include <mutex>
+#include <random>
 #include <sstream>
 
 namespace hpm::cli {
@@ -84,6 +85,51 @@ std::string promptInput(const std::string& prompt) {
     return input;
 }
 
+std::string urlEncode(const std::string& value) {
+    static const char* hex = "0123456789ABCDEF";
+    std::string out;
+    for (unsigned char c : value) {
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+            c == '.' || c == '~') {
+            out.push_back(static_cast<char>(c));
+        } else {
+            out.push_back('%');
+            out.push_back(hex[c >> 4]);
+            out.push_back(hex[c & 0x0F]);
+        }
+    }
+    return out;
+}
+
+std::string randomHex(size_t bytes) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<int> dist(0, 255);
+    static const char* hex = "0123456789abcdef";
+    std::string out;
+    out.reserve(bytes * 2);
+    for (size_t i = 0; i < bytes; ++i) {
+        unsigned v = static_cast<unsigned>(dist(gen));
+        out.push_back(hex[v >> 4]);
+        out.push_back(hex[v & 0x0F]);
+    }
+    return out;
+}
+
+std::string randomCheckCode() {
+    static const char alphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<size_t> dist(0, sizeof(alphabet) - 2);
+    std::string out;
+    for (int i = 0; i < 8; ++i) {
+        if (i == 4) out.push_back('-');
+        out.push_back(alphabet[dist(gen)]);
+    }
+    return out;
+}
+
 } // namespace
 
 void LoginCmd::setup(CLI::App& app) {
@@ -98,13 +144,34 @@ int LoginCmd::run(DevContext& ctx) {
     // 1. 启动本地 HTTP 服务器
     int port = 30000 + (rand() % 10000);
     std::string code;
+    std::string callbackError;
     std::mutex codeMutex;
+    const std::string state = randomHex(16);
+    const std::string checkCode = randomCheckCode();
 
     httplib::Server svr;
     svr.Get("/callback", [&](const httplib::Request& req, httplib::Response& res) {
+        const std::string gotState = req.get_param_value("state");
+        const std::string gotCode = req.get_param_value("code");
         {
             std::lock_guard<std::mutex> lock(codeMutex);
-            code = req.get_param_value("code");
+            if (gotState != state) {
+                callbackError = "state 校验失败，可能不是本次授权请求";
+            } else if (gotCode.empty()) {
+                callbackError = "回调没有 code 参数";
+            } else {
+                code = gotCode;
+            }
+        }
+        if (!callbackError.empty()) {
+            res.status = 400;
+            res.set_content(
+                "<html><head><meta charset=\"utf-8\"></head><body>"
+                "<h1>登录失败</h1><p>" + callbackError + "</p>"
+                "</body></html>",
+                "text/html; charset=utf-8");
+            svr.stop();
+            return;
         }
         res.set_content(
             "<html><head><meta charset=\"utf-8\"></head><body>"
@@ -118,9 +185,13 @@ int LoginCmd::run(DevContext& ctx) {
 
     std::string redirectUri = "http://localhost:" + std::to_string(port) + "/callback";
     std::string oauthUrl = std::string(HPM_DEV_CENTER_OAUTH_URL) +
-                           "?app_id=" + HPM_DEV_CENTER_APP_ID +
-                           "&redirect_uri=" + redirectUri;
+                           "?app_id=" + urlEncode(HPM_DEV_CENTER_APP_ID) +
+                           "&redirect_uri=" + urlEncode(redirectUri) +
+                           "&state=" + state +
+                           "&code=" + checkCode;
 
+    std::cout << "核对码: " << checkCode << "\n";
+    std::cout << "请确认浏览器授权页显示的核对码与上面一致。\n\n";
     std::cout << "请在浏览器中完成授权...\n";
     std::cout << "如果浏览器没有自动打开，请访问：\n";
     std::cout << "  " << oauthUrl << "\n\n";
@@ -134,11 +205,17 @@ int LoginCmd::run(DevContext& ctx) {
     }
 
     std::string codeCopy;
+    std::string errorCopy;
     {
         std::lock_guard<std::mutex> lock(codeMutex);
         codeCopy = code;
+        errorCopy = callbackError;
     }
 
+    if (!errorCopy.empty()) {
+        err(errorCopy);
+        return 1;
+    }
     if (codeCopy.empty()) {
         err("未收到授权码");
         return 1;
@@ -149,6 +226,7 @@ int LoginCmd::run(DevContext& ctx) {
     tokenBody.set("code", json::Value(codeCopy));
     tokenBody.set("appId", json::Value(HPM_DEV_CENTER_APP_ID));
     tokenBody.set("appKey", json::Value(HPM_DEV_CENTER_APP_KEY));
+    tokenBody.set("redirectUri", json::Value(redirectUri));
 
     auto tokenResp = httpPostJson(HPM_DEV_CENTER_TOKEN_API,
                                   json::dump(tokenBody, -1));
