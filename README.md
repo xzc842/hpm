@@ -54,10 +54,29 @@ HPM 的答案：
 ```bash
 git clone --recurse-submodules https://github.com/xzc842/hpm.git
 cd hpm
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DHPM_BUILD_TESTS=OFF
 cmake --build build -j
-sudo cp build/bin/hpm /usr/local/bin/
+sudo cmake --install build --prefix /usr/local
 ```
+
+安装内容：
+
+```text
+/usr/local/bin/hpm
+/usr/local/bin/hpm-dev
+/usr/local/bin/mcus
+/usr/local/bin/dump_shm
+/usr/local/lib/libmcus_core.so
+/usr/local/lib/libmcus_isa_sdk.a
+/usr/local/include/hpm/debug/plugin.h
+/usr/local/include/mcus/*.h
+/usr/local/src/mcus/model.cpp
+/usr/local/src/mcus/log.cpp
+/usr/local/src/mcus/isa_base.cpp
+```
+
+其中 `hpm-dev` 是驱动开发工具，`libmcus_isa_sdk.a`、`/usr/local/include/mcus`
+和 `/usr/local/src/mcus` 用于芯片包 `debug/isa_*.cpp` 的现场编译。
 
 如果克隆时没有带子模块：
 
@@ -156,40 +175,40 @@ hpm flash
 ### 5. 在模拟器中运行
 
 `hpm debug` 会先检查固件是否已编译，然后启动随 HPM 一起构建的 mcus 模拟器。
-芯片模型和模拟器配置文件由用户在命令行指定：
+模型、ISA 和配置默认自动解析：
 
 ```bash
-hpm debug \
-  --isa build/lib/libmcus_isa_8051.so \
-  --model debug/mcus/models/ch552g.json \
-  --config debug/mcus/config/example.toml
+hpm debug
 ```
 
-`--isa` 是 ISA 动态库路径，可以显式指定；不指定时按模型的 `arch` 自动推导
-（如 `8051` → `build/lib/libmcus_isa_8051.so`），也支持 `HPM_ISA` 环境变量。
+- 芯片模型和 ISA 源文件从芯片包的 `debug/` 目录读取；
+- 芯片包 `debug/isa_<arch>.cpp` 会在项目 `build/hpm-debug/isa/` 下现场编译；
+- 配置文件使用项目根目录的 `debug.toml`。
+
+这些路径仍可用 `--model` / `--isa` / `--config` 覆盖。
 
 默认使用 `build/` 下最新的 `firmware.hex` / `firmware.ihx` / `firmware.bin`；
 默认启动后暂停，等待 `run` / `step`；`--run` 可启动即运行。
 
 | 参数 | 必填 | 默认 | 说明 |
 |---|---|---|---|
-| `--model <json>` | 是 | — | mcus 芯片模型 |
-| `--config <toml>` | 是 | — | mcus 配置 |
-| `--isa <so>` | 否 | 按 arch 推导 | ISA 动态库 |
+| `--model <json>` | 否 | 芯片包 `debug/*.json` | 覆盖芯片模型 |
+| `--config <toml>` | 否 | 项目 `debug.toml` | 覆盖 mcus 配置 |
+| `--isa <so>` | 否 | 现场编译芯片包 ISA | 覆盖 ISA 动态库 |
 | `--mcus <bin>` | 否 | `build/bin/mcus` | 模拟器 |
 | `--firmware <file>` | 否 | `build/` 下最新固件 | 覆盖固件 |
 | `--json` | 否 | — | JSON Lines 模式 |
 | `--run` | 否 | 暂停 | 启动即运行 |
 | `--allow-missing-debug` | 否 | — | 允许设备无 debug 插件 |
 | `--host-cc <cc>` | 否 | `cc` | 编译设备插件 |
+| `--host-cxx <cxx>` | 否 | `c++` | 编译芯片 ISA |
 | `--dry-run` | 否 | — | 只打印命令 |
 
 设备可以来自驱动包的 `debug/debug.c`，会被编译成插件并在会话中加载。
 外部程序调用使用 JSON 协议：
 
 ```bash
-hpm debug --json --isa build/lib/libmcus_isa_8051.so \
-  --model ... --config ...
+hpm debug --json
 ```
 
 详见 [设备虚拟化插件规范](docs/debug_plugin.md) 与 [JSON 协议](docs/debug_protocol.md)。
@@ -209,7 +228,7 @@ hpm debug --json --isa build/lib/libmcus_isa_8051.so \
 | `hpm search <包名[@版本]> [--json]` | 查询包信息；省略版本显示最新版本；支持关键字模糊匹配 |
 | `hpm build` | 编译固件到 `build/` |
 | `hpm flash` | 烧录固件 |
-| `hpm debug [--json] --model <model.json> --config <config.toml>` | 在 mcus 模拟器中运行固件并加载设备插件 |
+| `hpm debug [--json]` | 在 mcus 模拟器中运行固件并加载设备插件 |
 | `hpm clean` | 删除 `build/` |
 | `hpm dev --export` | 生成 `hpm.h`（底层 API） |
 

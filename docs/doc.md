@@ -875,15 +875,20 @@ driver/
 
 **作用**：`hpm debug`。检查 `driver/`、`build/` 和固件是否存在，然后启动 mcus 模拟器。
 
-- `--model`：mcus 芯片模型（必填）
-- `--config`：mcus 配置（必填）
-- `--isa`：ISA 动态库（默认按模型 `arch` 推导为 `libmcus_isa_<arch>.so`）
-- `--mcus`：模拟器路径（默认 `build/bin/mcus`）
-- `--firmware`：覆盖固件（默认 `build/` 下最新的 `firmware.hex|ihx|bin`）
-- `--dry-run`：只打印启动命令
+- 默认从芯片包 `debug/` 读取模型和 `isa_<arch>.cpp`；
+- 默认从项目根目录读取 `debug.toml`；
+- 芯片 ISA 在 `build/hpm-debug/isa/` 现场编译；
+- `--model`：覆盖芯片模型；
+- `--config`：覆盖项目 `debug.toml`；
+- `--isa`：覆盖现场编译的 ISA 动态库；
+- `--mcus`：模拟器路径（默认 `build/bin/mcus`）；
+- `--firmware`：覆盖固件（默认 `build/` 下最新的 `firmware.hex|ihx|bin`）；
+- `--host-cxx`：编译芯片 ISA 的 C++ 编译器（默认 `c++`）；
+- `--dry-run`：只打印启动命令。
 
 mcus 源码通过 git submodule `debug/mcus` 引入，由 `debug/CMakeLists.txt` 编译为
-`build/bin/mcus`、`build/lib/libmcus_core.so`、`build/lib/libmcus_isa_8051.so`。
+`build/bin/mcus`、`build/lib/libmcus_core.so`、`build/lib/libmcus_isa_sdk.a`
+以及内置 `libmcus_isa_8051.so` / `libmcus_isa_arm.so`。
 
 `debug/host/` 是 `hpm debug` 的宿主运行时：
 

@@ -49,7 +49,8 @@ void openBrowser(const std::string& url) {
 #elif __APPLE__
     std::system(("open \"" + url + "\"").c_str());
 #else
-    std::system(("xdg-open \"" + url + "\"").c_str());
+    const int rc = std::system(("xdg-open \"" + url + "\"").c_str());
+    (void)rc;
 #endif
 }
 

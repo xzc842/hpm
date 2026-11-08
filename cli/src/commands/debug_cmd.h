@@ -41,6 +41,7 @@ private:
     std::string mcusPath_;
     std::string firmwarePath_;
     std::string hostCc_ = "cc";
+    std::string hostCxx_ = "c++";
     bool dryRun_ = false;
     bool jsonMode_ = false;
     bool runImmediately_ = false;

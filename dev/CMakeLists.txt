@@ -42,5 +42,7 @@ target_link_libraries(hpm-dev
 target_include_directories(hpm-dev
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
-        ${CMAKE_SOURCE_DIR}/third_party/httplib
 )
+target_include_directories(hpm-dev SYSTEM PRIVATE ${CMAKE_SOURCE_DIR}/third_party/httplib)
+install(TARGETS hpm-dev RUNTIME DESTINATION bin)
+set_target_properties(hpm-dev PROPERTIES INSTALL_RPATH "$ORIGIN/../lib")

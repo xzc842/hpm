@@ -130,7 +130,8 @@ Result<void> verifyCertificate(const CertificatePtr& leaf,
                          certificateSubject(issuer));
     }
     if (requireCa) {
-        const int pathlen = X509_get_pathlen(issuer.get());
+        const long raw_pathlen = X509_get_pathlen(issuer.get());
+        const int pathlen = static_cast<int>(raw_pathlen);
         if (pathlen >= 0 && pathlen < 1) {
             return Error(ErrorCode::ChecksumMismatch,
                          "签发者证书 pathlen 不允许再签发 CA");

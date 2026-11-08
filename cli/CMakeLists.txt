@@ -35,3 +35,5 @@ target_link_libraries(hpm
         hpm_debug_host
         CLI11::CLI11
 )
+install(TARGETS hpm RUNTIME DESTINATION bin)
+set_target_properties(hpm PROPERTIES INSTALL_RPATH "$ORIGIN/../lib")
