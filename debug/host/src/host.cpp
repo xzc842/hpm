@@ -755,14 +755,6 @@ struct Host::Impl {
             ctx->api.bus_send = &Impl::hostBusSend;
             ctx->api.usb_send = &Impl::hostUsbSend;
 
-            HpmDebugDeviceInfo info{};
-            info.device = ctx->name.c_str();
-            info.driver = ctx->driver.c_str();
-            info.config = ctx->configKv.data();
-            info.config_count = ctx->configKv.size();
-            info.bindings = ctx->bindingKv.data();
-            info.binding_count = ctx->bindingKv.size();
-
             devices.push_back(std::move(ctx));
         }
         return true;
