@@ -31,6 +31,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <iostream>
+#include <algorithm>
 #include <optional>
 #include <string>
 #include <vector>
@@ -162,6 +163,120 @@ Result<fs::path> locateIsa(const fs::path& projectDir,
                      arch + ".so）");
 }
 
+struct ChipDebug {
+    fs::path packageDir;
+    fs::path debugDir;
+};
+
+Result<ChipDebug> findChipDebug(const fs::path& packagesDir,
+                                const std::string& mcu) {
+    std::error_code ec;
+    std::vector<fs::path> matches;
+    for (const auto& entry : fs::directory_iterator(packagesDir, ec)) {
+        if (ec) break;
+        if (!entry.is_directory()) continue;
+        const fs::path chipJson = entry.path() / "chip.json";
+        if (!fs::is_regular_file(chipJson)) continue;
+        auto text = util::readFile(chipJson);
+        if (!text) continue;
+        auto j = json::parse(*text);
+        if (!j) continue;
+        if (j->getString("name") == mcu &&
+            fs::is_directory(entry.path() / "debug")) {
+            matches.push_back(entry.path());
+        }
+    }
+    if (matches.empty()) {
+        return Error(ErrorCode::NotFound,
+                     "找不到芯片包 debug: " + mcu);
+    }
+    std::sort(matches.begin(), matches.end(), [](const fs::path& a,
+                                                const fs::path& b) {
+        return a.filename().string() > b.filename().string();
+    });
+    return ChipDebug{matches.front(), matches.front() / "debug"};
+}
+
+Result<fs::path> findChipIsaSource(const fs::path& debugDir,
+                                   const std::string& arch) {
+    std::error_code ec;
+    const fs::path exact = debugDir / ("isa_" + arch + ".cpp");
+    if (fs::is_regular_file(exact, ec)) return exact;
+
+    std::vector<fs::path> candidates;
+    for (const auto& entry : fs::directory_iterator(debugDir, ec)) {
+        if (ec) break;
+        if (!entry.is_regular_file()) continue;
+        const std::string name = entry.path().filename().string();
+        if (name.rfind("isa_", 0) == 0 && entry.path().extension() == ".cpp") {
+            candidates.push_back(entry.path());
+        }
+    }
+    if (candidates.size() == 1) return candidates.front();
+    return Error(ErrorCode::NotFound,
+                 "芯片包 debug 里找不到 isa_" + arch + ".cpp");
+}
+
+fs::path firstExisting(const std::vector<fs::path>& paths) {
+    std::error_code ec;
+    for (const auto& p : paths) {
+        if (fs::is_regular_file(p, ec)) return p;
+    }
+    return {};
+}
+
+Result<fs::path> compileChipIsa(const fs::path& source,
+                                const fs::path& projectDir,
+                                const fs::path& buildDir,
+                                const std::string& arch,
+                                const std::string& hostCxx,
+                                bool verbose) {
+    const fs::path exeDir = executableDir();
+    const fs::path sdk = firstExisting({
+        exeDir / ".." / "lib" / "libmcus_isa_sdk.a",
+        buildDir / "lib" / "libmcus_isa_sdk.a",
+        projectDir / "build" / "lib" / "libmcus_isa_sdk.a",
+        "/usr/local/lib/libmcus_isa_sdk.a",
+        "/usr/lib/libmcus_isa_sdk.a",
+        "/usr/lib64/libmcus_isa_sdk.a",
+    });
+    if (sdk.empty()) {
+        return Error(ErrorCode::NotFound,
+                     "找不到 libmcus_isa_sdk.a（需要先构建 hpm/mcus）");
+    }
+
+    const fs::path includeDir = firstExisting({
+        exeDir / ".." / "include" / "mcus" / "instruction.h",
+        buildDir / "include" / "mcus" / "instruction.h",
+        projectDir / "build" / "include" / "mcus" / "instruction.h",
+        "/usr/local/include/mcus/instruction.h",
+        "/usr/include/mcus/instruction.h",
+    }).parent_path().parent_path();
+    if (includeDir.empty()) {
+        return Error(ErrorCode::NotFound,
+                     "找不到 mcus SDK 头文件（需要 build/include/mcus）");
+    }
+
+    const fs::path outDir = buildDir / "hpm-debug" / "isa";
+    std::error_code ec;
+    fs::create_directories(outDir, ec);
+    const fs::path out = outDir / ("libmcus_isa_" + arch + ".so");
+
+    std::vector<std::string> args = {
+        "-std=c++17", "-O2", "-fPIC", "-shared",
+        "-I", includeDir.string(),
+        source.string(),
+        sdk.string(),
+        "-o", out.string(),
+    };
+    auto st = util::runProcess(hostCxx, args, verbose);
+    if (!st.ok()) {
+        return Error(ErrorCode::BuildFailed,
+                     "编译芯片 ISA 失败: " + st.error().message());
+    }
+    return out;
+}
+
 Result<fs::path> locateMcus(const std::string& explicitPath) {
     if (!explicitPath.empty()) {
         auto p = util::findExecutable(explicitPath);
@@ -193,13 +308,11 @@ Result<fs::path> locateMcus(const std::string& explicitPath) {
 
 void DebugCmd::setup(CLI::App& app) {
     app.add_option("--model", modelPath_,
-                   "mcus 芯片模型文件（JSON，必填）")
-        ->required();
+                   "覆盖芯片包 debug 里的模型文件");
     app.add_option("--config", configPath_,
-                   "mcus 配置文件（TOML，必填）")
-        ->required();
+                   "覆盖项目 debug.toml");
     app.add_option("--isa", isaPath_,
-                   "ISA 动态库（默认按模型 arch 推导）");
+                   "覆盖现场编译的芯片 ISA 动态库");
     app.add_option("--mcus", mcusPath_,
                    "mcus 可执行文件（默认 build/bin/mcus）");
     app.add_option("--firmware", firmwarePath_,
@@ -210,7 +323,9 @@ void DebugCmd::setup(CLI::App& app) {
     app.add_flag("--allow-missing-debug", allowMissing_,
                  "允许没有 debug/debug.c 的设备");
     app.add_option("--host-cc", hostCc_,
-                   "编译设备 debug 插件用的宿主机编译器（默认 cc）");
+                   "编译设备 debug 插件用的 C 编译器（默认 cc）");
+    app.add_option("--host-cxx", hostCxx_,
+                   "编译芯片 ISA 用的 C++ 编译器（默认 c++）");
 }
 
 int DebugCmd::run(CmdContext& ctx) {
@@ -240,16 +355,55 @@ int DebugCmd::run(CmdContext& ctx) {
     }
     Output::detail("固件: " + firmware->string());
 
-    // 模型 / 配置
-    const fs::path modelPath = fs::absolute(modelPath_);
-    const fs::path configPath = fs::absolute(configPath_);
+    // 模型 / 配置：默认从芯片包 debug 与项目 debug.toml 解析
+    ChipDebug chip;
+    if (modelPath_.empty()) {
+        auto found = findChipDebug(ctx.packagesDir(), proj->mcu);
+        if (!found) {
+            Output::error(found.error().message());
+            return 1;
+        }
+        chip = *found;
+    } else {
+        // 显式模型时仍尝试找芯片包，用于编译 ISA
+        auto found = findChipDebug(ctx.packagesDir(), proj->mcu);
+        if (found) chip = *found;
+    }
+
+    fs::path modelPath;
+    if (!modelPath_.empty()) {
+        modelPath = fs::absolute(modelPath_);
+    } else {
+        const fs::path preferred = chip.debugDir / (proj->mcu + ".json");
+        if (fs::is_regular_file(preferred)) {
+            modelPath = preferred;
+        } else {
+            std::error_code ec;
+            for (const auto& entry : fs::directory_iterator(chip.debugDir, ec)) {
+                if (ec) break;
+                if (entry.is_regular_file() &&
+                    entry.path().extension() == ".json") {
+                    modelPath = entry.path();
+                    break;
+                }
+            }
+        }
+    }
+
+    fs::path configPath;
+    if (!configPath_.empty()) {
+        configPath = fs::absolute(configPath_);
+    } else {
+        configPath = fs::absolute(ctx.projectDir() / "debug.toml");
+    }
 
     if (!fs::is_regular_file(modelPath)) {
         Output::error("模型文件不存在: " + modelPath.string());
         return 1;
     }
     if (!fs::is_regular_file(configPath)) {
-        Output::error("配置文件不存在: " + configPath.string());
+        Output::error("配置文件不存在: " + configPath.string() +
+                      "（项目目录需要 debug.toml）");
         return 1;
     }
 
@@ -277,10 +431,32 @@ int DebugCmd::run(CmdContext& ctx) {
         return 1;
     }
 
-    auto isa = locateIsa(ctx.projectDir(), isaPath_, arch);
-    if (!isa) {
-        Output::error(isa.error().message());
+    fs::path isa;
+    if (!isaPath_.empty()) {
+        auto explicitIsa = locateIsa(ctx.projectDir(), isaPath_, arch);
+        if (!explicitIsa) {
+            Output::error(explicitIsa.error().message());
+            return 1;
+        }
+        isa = *explicitIsa;
+    } else if (chip.debugDir.empty()) {
+        Output::error("找不到芯片包 debug，无法编译 ISA");
         return 1;
+    } else {
+        auto source = findChipIsaSource(chip.debugDir, arch);
+        if (!source) {
+            Output::error(source.error().message());
+            return 1;
+        }
+        Output::detail("ISA 源: " + source->string());
+        auto compiled = compileChipIsa(*source, ctx.projectDir(),
+                                       ctx.buildDir(), arch, hostCxx_,
+                                       ctx.verbose());
+        if (!compiled) {
+            Output::error(compiled.error().message());
+            return 1;
+        }
+        isa = *compiled;
     }
 
     auto mcus = locateMcus(mcusPath_);
@@ -296,10 +472,10 @@ int DebugCmd::run(CmdContext& ctx) {
                        " (" + arch + ")");
         Output::detail("固件: " + firmware->string());
         Output::detail("配置: " + configPath.string());
-        Output::detail("ISA:  " + isa->string());
+        Output::detail("ISA:  " + isa.string());
 
         std::vector<std::string> args = {
-            "--isa", isa->string(),
+            "--isa", isa.string(),
             "--model", modelPath.string(),
             "--firmware", firmware->string(),
             "--config", configPath.string(),
@@ -319,7 +495,7 @@ int DebugCmd::run(CmdContext& ctx) {
     options.configPath = configPath;
     options.firmwarePath = *firmware;
     options.mcusPath = *mcus;
-    options.isaPath = *isa;
+    options.isaPath = isa;
     options.jsonMode = jsonMode_;
     options.runImmediately = runImmediately_;
     options.allowMissing = allowMissing_;

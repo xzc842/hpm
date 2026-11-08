@@ -9,30 +9,47 @@
 
 ## 1. 启动
 
+通常情况下不需要指定模型、ISA 或配置：
+
+```bash
+hpm debug --json
+```
+
+自动解析规则：
+
+- `project.json` 的 `mcu` 对应芯片包；
+- 模型从芯片包 `debug/<mcu>.json` 读取；
+- `debug/isa_<arch>.cpp` 在 `build/hpm-debug/isa/` 现场编译；
+- 模拟器配置固定使用项目根目录的 `debug.toml`。
+
+需要时仍可覆盖：
+
 ```bash
 hpm debug --json \
-  --isa build/lib/libmcus_isa_8051.so \
   --model <model.json> \
-  --config <config.toml>
+  --config <debug.toml> \
+  --isa <lib.so>
 ```
 
 | 参数 | 必填 | 默认 | 说明 |
 |---|---|---|---|
-| `--model <json>` | 是 | — | 芯片模型 |
-| `--config <toml>` | 是 | — | 模拟器配置 |
-| `--isa <so>` | 否 | 按模型 arch 推导 | ISA 动态库；也可用 `HPM_ISA` |
+| `--model <json>` | 否 | 芯片包 `debug/*.json` | 覆盖芯片模型 |
+| `--config <toml>` | 否 | 项目 `debug.toml` | 覆盖模拟器配置 |
+| `--isa <so>` | 否 | 现场编译芯片包 ISA | 覆盖 ISA 动态库；也可用 `HPM_ISA` |
 | `--mcus <bin>` | 否 | `build/bin/mcus` | 模拟器路径 |
 | `--firmware <file>` | 否 | `build/` 下最新 | 固件覆盖 |
 | `--json` | 否 | — | JSON Lines |
 | `--run` | 否 | 暂停 | 启动即运行 |
 | `--allow-missing-debug` | 否 | — | 跳过无 debug 的设备 |
-| `--host-cc <cc>` | 否 | `cc` | 宿主机编译器 |
+| `--host-cc <cc>` | 否 | `cc` | 设备插件 C 编译器 |
+| `--host-cxx <cxx>` | 否 | `c++` | 芯片 ISA C++ 编译器 |
 | `--dry-run` | 否 | — | 只打印命令 |
 
 - **stdout**：只有 JSON Lines。
 - **stderr**：hpm/mcus 日志、编译错误。
 - 默认启动即暂停；`--run` 启动后立即运行。
 - 所有 stdout 消息都带单调递增的 `seq`。
+- 芯片 ISA 使用 `build/lib/libmcus_isa_sdk.a` 和 `build/include/mcus`；安装后也可使用 `/usr/local/lib`、`/usr/local/include`。
 
 ---
 

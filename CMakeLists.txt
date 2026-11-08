@@ -99,3 +99,10 @@ endif()
 
 add_subdirectory(dev)
 add_subdirectory(debug)
+
+# 第三方依赖不在 HPM 的警告策略范围内
+foreach(_hpm_dep Catch2 Catch2WithMain fmt)
+    if(TARGET ${_hpm_dep})
+        target_compile_options(${_hpm_dep} PRIVATE -w)
+    endif()
+endforeach()
