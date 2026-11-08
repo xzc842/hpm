@@ -148,8 +148,10 @@ Content-Type: application/json
 | `get_user` | 读取用户资料 | 不需要 |
 | `get_packages` | 读取用户的包列表 | 不需要 |
 | `update_package` | 新建/覆盖包与版本 | 见 5.4 |
+| `delete_package` | 删除包及其全部版本 | 见 5.7 |
 | `get_developers` | 读取用户的开发者列表 | 不需要 |
-| `update_developer` | 新建/更新开发者 | 见 5.5 |
+| `update_developer` | 新建/更新开发者 | 见 5.6 |
+| `delete_developer` | 删除开发者 | 见 5.8 |
 
 ### 5.2 `get_user` — 读取用户资料
 
@@ -275,7 +277,6 @@ Content-Type: application/json
 - 按 `(用户, name)` 唯一确定一条记录：不存在则创建，存在则更新。
 - **公钥地址发生变化时，`isVerified` 会自动重置为 `false`**，需要用户回到控制台重新验签；地址不变则保留原状态。
 - 应用侧无法直接把 `isVerified` 置为 `true`。
-- 目前不提供删除动作；删除开发者需用户在控制台操作。
 
 响应：
 
@@ -285,6 +286,60 @@ Content-Type: application/json
 
 // 更新
 { "success": true, "id": "a1b2c3d4e5f60718", "created": false, "verifiedReset": true }
+```
+
+### 5.7 `delete_package` — 删除包
+
+```json
+{
+  "action": "delete_package",
+  "accessToken": "<token>",
+  "payload": { "name": "stm32" }
+}
+```
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `id` | 二选一 | 包 ID，优先级高于 `name` |
+| `name` | 二选一 | 包名；同名包都会被删除 |
+
+行为：
+
+- 只能删除当前授权用户自己的包（服务端按 `userId` 过滤）。
+- 会级联删除该包下的**所有版本**。
+- 目标不存在时返回 404 `Package not found`。
+
+响应：
+
+```json
+{ "success": true, "deleted": 1, "ids": ["pkg_xxx"] }
+```
+
+### 5.8 `delete_developer` — 删除开发者
+
+```json
+{
+  "action": "delete_developer",
+  "accessToken": "<token>",
+  "payload": { "name": "dev-one" }
+}
+```
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `id` | 二选一 | 开发者 ID，优先级高于 `name` |
+| `name` | 二选一 | 开发者名称；同名记录都会被删除 |
+
+行为：
+
+- 只能删除当前授权用户自己的开发者。
+- 引用了该开发者的包会自动解除关联（`developerId` 置空），包本身不会被删除。
+- 目标不存在时返回 404 `Developer not found`。
+
+响应：
+
+```json
+{ "success": true, "deleted": 1, "ids": ["a1b2c3d4e5f60718"] }
 ```
 
 ## 6. 权限、撤销与账号状态
@@ -311,6 +366,7 @@ Content-Type: application/json
 | 401 | `Invalid or expired access token` | `accessToken` 不存在、已过期或不属于该应用 |
 | 403 | `User revoked authorization` | 用户已取消授权 |
 | 403 | `User account is frozen` | 用户账号被冻结 |
+| 404 | `Package not found` / `Developer not found` | 删除时目标不存在或不属于该用户 |
 | 500 | 具体错误信息 | 服务端异常 |
 
 Token 交换（`/api/public/oauth/token`）：
