@@ -1,6 +1,6 @@
 # HPM 设备虚拟化插件开发规范
 
-> 适用版本：`hpm-debug/2`、插件 ABI `2`
+> 适用版本：`hpm-debug/2`、插件 ABI `3`
 
 驱动包可以在根目录下提供 `debug/`，让设备在 `hpm debug` 中被虚拟化。
 `hpm sync` 生成 `driver/` 时**不会**复制 `debug/`，它只用于调试会话。
@@ -223,6 +223,10 @@ typedef struct HpmDebugHostApi {
     int (*usb_send)(void* host, uint32_t xfer_id, uint8_t ep,
                     uint8_t token, uint8_t handshake,
                     const uint8_t* data, size_t len);
+
+    int (*pulse_pin)(void* host, const char* pin,
+                     uint32_t active_value, uint32_t idle_value,
+                     uint64_t width_ns);
 } HpmDebugHostApi;
 ```
 
@@ -248,6 +252,38 @@ typedef struct HpmDebugHostApi {
 ### `set_pin`
 
 驱动芯片输入引脚。适用于按键、MISO 等。
+
+### `pulse_pin`
+
+产生一个精确到指令边界的输入脉冲：
+
+```c
+/* 高电平 1ms，然后回低电平 */
+if (api->pulse_pin(api->host, "P1.0", 1, 0, 1000000) != 0) {
+    /* 引脚不存在或模拟器未就绪 */
+}
+```
+
+参数：
+
+```c
+int (*pulse_pin)(void* host, const char* pin,
+                 uint32_t active_value, uint32_t idle_value,
+                 uint64_t width_ns);
+```
+
+宿主会：
+
+1. 暂停 CPU；
+2. 设置 `active_value`；
+3. 按 `crystal_hz` 把 `width_ns` 换算成虚拟周期，再按
+   `cycles_per_instruction` 向上取整为指令数；
+4. 执行这些指令；
+5. 设置 `idle_value`；
+6. 恢复原来的运行/暂停状态。
+
+因此脉宽精度是**一条指令边界**，实际宽度可能比请求值多不到一条指令。
+调用者必须确保引脚已经绑定到设备，且芯片端配置为输入。
 
 ### `inject_mmio`
 
@@ -478,7 +514,15 @@ picocom -b 115200 ~/.hpm/usb-cdc/serial.tty
 当前：
 
 ```c
-#define HPM_DEBUG_ABI_VERSION 2
+#define HPM_DEBUG_ABI_VERSION 3
+```
+
+ABI 3 在 ABI 2 基础上追加：
+
+```c
+int (*pulse_pin)(void* host, const char* pin,
+                 uint32_t active_value, uint32_t idle_value,
+                 uint64_t width_ns);
 ```
 
 ABI 2 相比 ABI 1：
@@ -490,6 +534,6 @@ ABI 2 相比 ABI 1：
   - `usb_send`
 - `bus_write` 现在用于 SPI 响应。
 
-ABI 2 的 `HpmDebugHostApi` 布局和事件 union 都变了，旧的独立编译插件 `.so`
-不能继续使用，必须用当前头文件重新编译。`hpm debug` 会自动重新编译驱动包里的
+ABI 3 的 `HpmDebugHostApi` 布局变了，旧插件 `.so` 不能继续使用，
+必须用当前头文件重新编译。`hpm debug` 会自动重新编译驱动包里的
 `debug/debug.c`，但外部手工编译的插件需要自行重建。
