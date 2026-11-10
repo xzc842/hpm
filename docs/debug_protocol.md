@@ -476,4 +476,4 @@ USB CDC 设备作为**输入设备**出现，不再增加输出设备：
 发送内容会以 `TX: ...` 日志输出；固件返回的串口数据由插件通过 `log` 事件写入宿主日志窗口，不通过 `$state.rx`。
 PTY 路径（`~/.hpm/usb-cdc/serial.tty`）在启动日志中打印，仍可直接打开。
 
-插件 ABI 当前是 `2`；设备插件需要用 `core/include/hpm/debug/plugin.h` 重新编译。
+插件 ABI 当前是 `3`；设备插件需要用 `core/include/hpm/debug/plugin.h` 重新编译。

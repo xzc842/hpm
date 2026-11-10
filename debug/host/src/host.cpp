@@ -510,6 +510,7 @@ struct Host::Impl {
         std::error_code ec;
         if (!fs::exists(root, ec)) return std::nullopt;
 
+        std::optional<fs::path> fallback;
         for (const auto& entry : fs::directory_iterator(root, ec)) {
             if (ec) break;
             if (!entry.is_directory()) continue;
@@ -520,16 +521,21 @@ struct Host::Impl {
             if (!dm || !(dm->version == version)) continue;
 
             const std::string dirName = entry.path().filename().string();
-            const bool dirMatches =
-                dirName == name ||
-                dirName.rfind(name + "-", 0) == 0;
-            const bool nameMatches =
-                dm->name == name ||
-                name.rfind(dm->name, 0) == 0 ||
-                dm->name.rfind(name, 0) == 0;
-            if (nameMatches || dirMatches) return entry.path();
+            // 先匹配精确的 <driver> 或 <driver>-<chip> 目录，避免
+            // usb_cdc 前缀误匹配到 usb_cdc-stm32... 等其他芯片包。
+            if (dirName == name || dirName.rfind(name + "-", 0) == 0) {
+                return entry.path();
+            }
+            if (dm->name == name) return entry.path();
+
+            if (!fallback) {
+                const bool loose =
+                    name.rfind(dm->name, 0) == 0 ||
+                    dm->name.rfind(name, 0) == 0;
+                if (loose) fallback = entry.path();
+            }
         }
-        return std::nullopt;
+        return fallback;
     }
 
     bool locateAndCheck() {
@@ -754,6 +760,7 @@ struct Host::Impl {
             ctx->api.bus_write = &Impl::hostBusWrite;
             ctx->api.bus_send = &Impl::hostBusSend;
             ctx->api.usb_send = &Impl::hostUsbSend;
+            ctx->api.pulse_pin = &Impl::hostPulsePin;
 
             devices.push_back(std::move(ctx));
         }
@@ -856,6 +863,14 @@ struct Host::Impl {
         if (!dev || !dev->host || !dev->host->busRouter) return -1;
         return dev->host->busRouter->sendUsb(xfer_id, ep, token, handshake,
                                              data, len);
+    }
+    static int hostPulsePin(void* host, const char* pin,
+                            uint32_t active, uint32_t idle,
+                            uint64_t width_ns) {
+        auto* dev = static_cast<DeviceCtx*>(host);
+        if (!dev || !dev->host) return -1;
+        return dev->host->pulsePin(canonicalPin(readCString(pin)),
+                                   active, idle, width_ns);
     }
 
     // ---------- 引脚/注入 ----------
@@ -980,6 +995,42 @@ struct Host::Impl {
                 dev->lib->event(dev->ctx, &ev);
             }
         }
+        return 0;
+    }
+
+    int pulsePin(const std::string& canon, uint32_t active,
+                 uint32_t idle, uint64_t width_ns) {
+        if (!shm) return -1;
+        const bool was_running =
+            readStatus() == static_cast<uint32_t>(mcus::ControlStatus::Running);
+
+        if (mcuPause() != 0) return -1;
+
+        if (setPin(canon, active) != 0) {
+            if (was_running) mcuResume();
+            return -1;
+        }
+
+        uint64_t cycles = 1;
+        if (model.crystal_hz > 0 && width_ns > 0) {
+            const long double raw =
+                static_cast<long double>(width_ns) * model.crystal_hz;
+            cycles = static_cast<uint64_t>(raw / 1000000000.0L);
+            if (cycles == 0) cycles = 1;
+        }
+        const uint64_t cpi = model.cycles_per_instruction > 0
+                                 ? model.cycles_per_instruction
+                                 : 1;
+        uint64_t steps = (cycles + cpi - 1) / cpi;
+        if (steps == 0) steps = 1;
+        if (steps > UINT32_MAX) steps = UINT32_MAX;
+        mcuStep(static_cast<uint32_t>(steps));
+
+        if (setPin(canon, idle) != 0) {
+            if (was_running) mcuResume();
+            return -1;
+        }
+        if (was_running) mcuResume();
         return 0;
     }
 

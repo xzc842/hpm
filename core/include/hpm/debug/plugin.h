@@ -37,7 +37,7 @@
 extern "C" {
 #endif
 
-#define HPM_DEBUG_ABI_VERSION 2
+#define HPM_DEBUG_ABI_VERSION 3
 
 typedef struct {
     const char* key;
@@ -167,6 +167,15 @@ typedef struct HpmDebugHostApi {
     int (*usb_send)(void* host, uint32_t xfer_id, uint8_t ep,
                     uint8_t token, uint8_t handshake,
                     const uint8_t* data, size_t len);
+
+    /* 在芯片输入引脚上产生一个脉冲。
+     * host 会暂停 CPU，按 width_ns 换算虚拟时间步进，设置 active，
+     * 到达目标后设置 idle，再恢复原运行状态。
+     * 精度为一条指令边界：实际宽度会向上取整到 cycles_per_instruction。
+     * 返回 0 成功，-1 引脚不存在/模拟器未就绪。 */
+    int (*pulse_pin)(void* host, const char* pin,
+                     uint32_t active_value, uint32_t idle_value,
+                     uint64_t width_ns);
 } HpmDebugHostApi;
 
 uint32_t hpm_debug_abi_version(void);
