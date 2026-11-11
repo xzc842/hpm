@@ -297,6 +297,13 @@ Result<fs::path> locateMcus(const std::string& explicitPath) {
         return fs::weakly_canonical(sibling);
     }
 
+    if (const char* home = std::getenv("HOME"); home && *home) {
+        const fs::path userMcus = fs::path(home) / ".local" / "bin" / "mcus";
+        if (util::findExecutable(userMcus.string())) {
+            return fs::weakly_canonical(userMcus);
+        }
+    }
+
     auto p = util::findExecutable("mcus");
     if (p) return *p;
 

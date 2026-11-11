@@ -56,27 +56,34 @@ git clone --recurse-submodules https://github.com/xzc842/hpm.git
 cd hpm
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DHPM_BUILD_TESTS=OFF
 cmake --build build -j
-sudo cmake --install build --prefix /usr/local
+cmake --install build
 ```
 
-安装内容：
+默认安装到 `$HOME/.local`，无需 sudo：
 
 ```text
-/usr/local/bin/hpm
-/usr/local/bin/hpm-dev
-/usr/local/bin/mcus
-/usr/local/bin/dump_shm
-/usr/local/lib/libmcus_core.so
-/usr/local/lib/libmcus_isa_sdk.a
-/usr/local/include/hpm/debug/plugin.h
-/usr/local/include/mcus/*.h
-/usr/local/src/mcus/model.cpp
-/usr/local/src/mcus/log.cpp
-/usr/local/src/mcus/isa_base.cpp
+~/.local/bin/hpm
+~/.local/bin/hpm-dev
+~/.local/bin/mcus
+~/.local/bin/dump_shm
+~/.local/lib/libmcus_core.so
+~/.local/lib/libmcus_isa_sdk.a
+~/.local/lib/libmcus_jit_8051.so
+~/.local/include/hpm/debug/plugin.h
+~/.local/include/mcus/*.h
+~/.local/src/mcus/model.cpp
+~/.local/src/mcus/log.cpp
+~/.local/src/mcus/isa_base.cpp
 ```
 
-其中 `hpm-dev` 是驱动开发工具，`libmcus_isa_sdk.a`、`/usr/local/include/mcus`
-和 `/usr/local/src/mcus` 用于芯片包 `debug/isa_*.cpp` 的现场编译。
+其中 `hpm-dev` 是驱动开发工具，`libmcus_isa_sdk.a`、`~/.local/include/mcus`
+和 `~/.local/src/mcus` 用于芯片包 `debug/isa_*.cpp` 的现场编译。
+
+如果 `~/.local/bin` 不在 `PATH` 中，需要把它加入：
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
 
 如果克隆时没有带子模块：
 
