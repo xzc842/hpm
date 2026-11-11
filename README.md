@@ -190,6 +190,7 @@ hpm debug
 
 - 芯片模型和 ISA 源文件从芯片包的 `debug/` 目录读取；
 - 芯片包 `debug/isa_<arch>.cpp` 会在项目 `build/hpm-debug/isa/` 下现场编译；
+- 使用 `--jit` 时，芯片包 `debug/isa_jit_<arch>.cpp` 会在项目 `build/hpm-debug/jit/` 下现场编译并启用；
 - 配置文件使用项目根目录的 `debug.toml`。
 
 这些路径仍可用 `--model` / `--isa` / `--config` 覆盖。
@@ -202,6 +203,7 @@ hpm debug
 | `--model <json>` | 否 | 芯片包 `debug/*.json` | 覆盖芯片模型 |
 | `--config <toml>` | 否 | 项目 `debug.toml` | 覆盖 mcus 配置 |
 | `--isa <so>` | 否 | 现场编译芯片包 ISA | 覆盖 ISA 动态库 |
+| `--jit` | 否 | 关闭 | 编译并启用芯片包 JIT |
 | `--mcus <bin>` | 否 | `build/bin/mcus` | 模拟器 |
 | `--firmware <file>` | 否 | `build/` 下最新固件 | 覆盖固件 |
 | `--json` | 否 | — | JSON Lines 模式 |

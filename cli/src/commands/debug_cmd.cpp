@@ -277,6 +277,64 @@ Result<fs::path> compileChipIsa(const fs::path& source,
     return out;
 }
 
+Result<fs::path> findChipJitSource(const fs::path& debugDir,
+                                    const std::string& arch) {
+    std::error_code ec;
+    const fs::path exact = debugDir / ("isa_jit_" + arch + ".cpp");
+    if (fs::is_regular_file(exact, ec)) return exact;
+    return Error(ErrorCode::NotFound,
+                 "找不到芯片 JIT 源: " + exact.string());
+}
+
+Result<fs::path> compileChipJit(const fs::path& source,
+                                const fs::path& projectDir,
+                                const fs::path& buildDir,
+                                const std::string& arch,
+                                const std::string& hostCxx,
+                                bool verbose) {
+    const fs::path exeDir = executableDir();
+    const fs::path sdk = firstExisting({
+        exeDir / ".." / "lib" / "libmcus_isa_sdk.a",
+        buildDir / "lib" / "libmcus_isa_sdk.a",
+        projectDir / "build" / "lib" / "libmcus_isa_sdk.a",
+        "/usr/local/lib/libmcus_isa_sdk.a",
+        "/usr/lib/libmcus_isa_sdk.a",
+        "/usr/lib64/libmcus_isa_sdk.a",
+    });
+    if (sdk.empty()) {
+        return Error(ErrorCode::NotFound,
+                     "找不到 libmcus_isa_sdk.a（需要先构建 hpm/mcus）");
+    }
+    const fs::path includeDir = firstExisting({
+        exeDir / ".." / "include" / "mcus" / "instruction.h",
+        buildDir / "include" / "mcus" / "instruction.h",
+        projectDir / "build" / "include" / "mcus" / "instruction.h",
+        "/usr/local/include/mcus/instruction.h",
+        "/usr/include/mcus/instruction.h",
+    }).parent_path().parent_path();
+    if (includeDir.empty()) {
+        return Error(ErrorCode::NotFound,
+                     "找不到 mcus SDK 头文件（需要 build/include/mcus）");
+    }
+    const fs::path outDir = buildDir / "hpm-debug" / "jit";
+    std::error_code ec;
+    fs::create_directories(outDir, ec);
+    const fs::path out = outDir / ("libmcus_jit_" + arch + ".so");
+    std::vector<std::string> args = {
+        "-std=c++17", "-O2", "-fPIC", "-shared",
+        "-I", includeDir.string(),
+        source.string(),
+        sdk.string(),
+        "-o", out.string(),
+    };
+    auto st = util::runProcess(hostCxx, args, verbose);
+    if (!st.ok()) {
+        return Error(ErrorCode::BuildFailed,
+                     "编译芯片 JIT 失败: " + st.error().message());
+    }
+    return out;
+}
+
 Result<fs::path> locateMcus(const std::string& explicitPath) {
     if (!explicitPath.empty()) {
         auto p = util::findExecutable(explicitPath);
@@ -329,6 +387,8 @@ void DebugCmd::setup(CLI::App& app) {
     app.add_flag("--run", runImmediately_, "启动后立即运行（默认暂停）");
     app.add_flag("--allow-missing-debug", allowMissing_,
                  "允许没有 debug/debug.c 的设备");
+    app.add_flag("--jit", useJit_,
+                 "编译并启用芯片包 debug/isa_jit_<arch>.cpp");
     app.add_option("--host-cc", hostCc_,
                    "编译设备 debug 插件用的 C 编译器（默认 cc）");
     app.add_option("--host-cxx", hostCxx_,
@@ -466,6 +526,22 @@ int DebugCmd::run(CmdContext& ctx) {
         isa = *compiled;
     }
 
+    fs::path jit;
+    if (useJit_ && !chip.debugDir.empty()) {
+        auto source = findChipJitSource(chip.debugDir, arch);
+        if (source) {
+            Output::detail("JIT 源: " + source->string());
+            auto compiled = compileChipJit(*source, ctx.projectDir(),
+                                           ctx.buildDir(), arch, hostCxx_,
+                                           ctx.verbose());
+            if (!compiled) {
+                Output::error(compiled.error().message());
+                return 1;
+            }
+            jit = *compiled;
+        }
+    }
+
     auto mcus = locateMcus(mcusPath_);
     if (!mcus) {
         Output::error(mcus.error().message());
@@ -503,6 +579,7 @@ int DebugCmd::run(CmdContext& ctx) {
     options.firmwarePath = *firmware;
     options.mcusPath = *mcus;
     options.isaPath = isa;
+    options.jitPath = jit;
     options.jsonMode = jsonMode_;
     options.runImmediately = runImmediately_;
     options.allowMissing = allowMissing_;

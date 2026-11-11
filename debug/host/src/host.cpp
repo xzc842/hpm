@@ -416,6 +416,9 @@ struct Host::Impl {
             sim->insert_or_assign("stream_name", streamName);
             sim->insert_or_assign("start_paused", true);
             sim->insert_or_assign("stay_alive", true);
+            if (!opts.jitPath.empty()) {
+                sim->insert_or_assign("jit", opts.jitPath.string());
+            }
 
             sessionConfig =
                 fs::absolute(opts.buildDir / "hpm-debug" / "session.toml")
