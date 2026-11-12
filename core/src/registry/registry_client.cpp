@@ -332,11 +332,91 @@ Result<RevocationList> RegistryClient::loadRevocation(
         fs::remove(tmpSig);
         return parsed.error();
     }
-    if (!parsed->fresh(7)) {
+    if (!parsed->fresh(HPM_REVOKE_MAX_AGE_DAYS)) {
         fs::remove(tmpJson);
         fs::remove(tmpSig);
         return Error(ErrorCode::ChecksumMismatch,
                      "吊销列表已超过 7 天有效期: " + url);
+    }
+
+    fs::remove(tmpJson);
+    fs::remove(tmpSig);
+    return *parsed;
+}
+
+Result<RevocationList> RegistryClient::loadRootRevocation() {
+    if (config_.offline) {
+        std::cerr << "warning: 您处于离线模式，无法获取根吊销列表\n";
+        return RevocationList{};
+    }
+
+    const char* env = std::getenv(HPM_ENV_ROOT_REVOKE);
+    const std::string url =
+        (env && *env) ? std::string(env) : std::string(HPM_ROOT_REVOKE_URL);
+    auto text = httpGet(url);
+    if (!text) {
+        return Error(ErrorCode::NetworkError,
+                     "根吊销列表拉取失败: " + text.error().message());
+    }
+    auto sigText = httpGet(url + ".sig");
+    if (!sigText) {
+        return Error(ErrorCode::NetworkError,
+                     "根吊销列表签名拉取失败: " +
+                         sigText.error().message());
+    }
+
+    const fs::path tmpDir = config_.cacheDir / "cache" / "tmp";
+    std::error_code ec;
+    fs::create_directories(tmpDir, ec);
+    const fs::path tmpJson = tmpDir / "ROOT_revoke.json.tmp";
+    const fs::path tmpSig = tmpDir / "ROOT_revoke.json.sig.tmp";
+    {
+        std::ofstream f(tmpJson);
+        if (!f) return Error(ErrorCode::IoError, "无法写根吊销列表临时文件");
+        f << *text;
+    }
+    {
+        std::ofstream f(tmpSig);
+        if (!f) return Error(ErrorCode::IoError, "无法写根吊销签名临时文件");
+        f << *sigText;
+    }
+
+    auto ok = verifySignatureWithPem(HPM_ROOT_CA_PEM, tmpSig, tmpJson);
+    if (!ok || !*ok) {
+        fs::remove(tmpJson);
+        fs::remove(tmpSig);
+        if (!ok) return ok.error();
+        return Error(ErrorCode::ChecksumMismatch,
+                     "根吊销列表签名无效: " + url);
+    }
+
+    auto parsed = parseRevocation(*text);
+    if (!parsed) {
+        fs::remove(tmpJson);
+        fs::remove(tmpSig);
+        return parsed.error();
+    }
+    if (!parsed->freshSince(HPM_ROOT_REVOKE_MAX_AGE_DAYS,
+                            HPM_ROOT_REVOKE_MIN_TIMESTAMP)) {
+        fs::remove(tmpJson);
+        fs::remove(tmpSig);
+        return Error(ErrorCode::ChecksumMismatch,
+                     "根吊销列表已过期或早于限制时间: " + url);
+    }
+
+    auto root = loadCertificatePem(HPM_ROOT_CA_PEM, "HPM_ROOT_CA_PEM");
+    if (!root) {
+        fs::remove(tmpJson);
+        fs::remove(tmpSig);
+        return root.error();
+    }
+    if (!parsed->issuerFingerprint.empty() &&
+        normalizeFingerprint(parsed->issuerFingerprint) !=
+            normalizeFingerprint(certificateFingerprint(*root))) {
+        fs::remove(tmpJson);
+        fs::remove(tmpSig);
+        return Error(ErrorCode::ChecksumMismatch,
+                     "根吊销列表 issuer 不是内置根证书: " + url);
     }
 
     fs::remove(tmpJson);
@@ -377,6 +457,21 @@ Result<Index> RegistryClient::fetchIndex(DownloadProgress progress) {
         officialCert_ = *cert;
         officialCertPath = *certPath;
         officialCertPath_ = *certPath;
+    }
+
+    if (!config_.skipSignature) {
+        auto rootRev = loadRootRevocation();
+        if (!rootRev) {
+            return Error(ErrorCode::PermissionDenied,
+                         "根吊销列表加载失败: " +
+                             rootRev.error().message());
+        }
+        if (rootRev->contains(officialCert_)) {
+            return Error(ErrorCode::PermissionDenied,
+                         "官方证书已被根吊销列表吊销");
+        }
+        rootRevoke_ = std::move(*rootRev);
+        rootRevokeLoaded_ = true;
     }
 
     std::string lastError;

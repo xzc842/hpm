@@ -27,6 +27,11 @@ Result<bool> verifySignatureWithCert(const std::filesystem::path& certPem,
                                      const std::filesystem::path& sigFile,
                                      const std::filesystem::path& dataFile);
 
+// 直接用 PEM 字符串中的证书公钥验证 detached signature。
+Result<bool> verifySignatureWithPem(const std::string& certPem,
+                                    const std::filesystem::path& sigFile,
+                                    const std::filesystem::path& dataFile);
+
 // 计算文件 SHA256（十六进制字符串）
 std::string sha256File(const std::filesystem::path& file);
 

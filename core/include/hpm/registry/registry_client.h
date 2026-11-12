@@ -92,6 +92,7 @@ private:
     Result<RevocationList> loadRevocation(
         const std::string& baseUrl,
         const std::filesystem::path& certPath);
+    Result<RevocationList> loadRootRevocation();
     bool isRevoked(const CertificatePtr& cert,
                    const std::string& domain) const;
 
@@ -103,6 +104,8 @@ private:
     std::filesystem::path officialCertPath_;
     RevocationList mainRevoke_;
     bool mainRevokeLoaded_ = false;
+    RevocationList rootRevoke_;
+    bool rootRevokeLoaded_ = false;
 
     // 域缓存
     std::map<std::string, Index>                  domainIndexes_;

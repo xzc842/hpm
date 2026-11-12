@@ -85,8 +85,17 @@ bool RevocationList::contains(const CertificatePtr& cert) const {
 }
 
 bool RevocationList::fresh(int days) const {
+    return freshSince(days, "");
+}
+
+bool RevocationList::freshSince(int days,
+                                const std::string& minUpdatedAt) const {
     const std::time_t updated = parseUtc(updatedAt);
     if (updated < 0) return false;
+    if (!minUpdatedAt.empty()) {
+        const std::time_t minUpdated = parseUtc(minUpdatedAt);
+        if (minUpdated < 0 || updated < minUpdated) return false;
+    }
     const std::time_t now = std::time(nullptr);
     if (now + 300 < updated) return false; // 未来时间，拒绝
     return (now - updated) <= static_cast<std::time_t>(days) * 24 * 60 * 60;

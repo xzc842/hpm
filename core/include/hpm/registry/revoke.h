@@ -43,6 +43,8 @@ struct RevocationList {
 
     bool contains(const CertificatePtr& cert) const;
     bool fresh(int days = 7) const;
+    // updatedAt 必须不早于 minUpdatedAt（空表示不限制）。
+    bool freshSince(int days, const std::string& minUpdatedAt) const;
 };
 
 Result<RevocationList> parseRevocation(const std::string& jsonText);
