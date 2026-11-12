@@ -54,7 +54,28 @@ size_t writeToFile(void* ptr, size_t size, size_t nmemb, void* userdata) {
 
 struct ProgressCtx {
     DownloadProgress progress;
+    TransferObserver observer;
+    std::string label;
+    uint64_t total = 0;
 };
+
+std::string transferLabel(const std::string& url) {
+    auto slash = url.find_last_of('/');
+    std::string label = slash == std::string::npos ? url : url.substr(slash + 1);
+    if (label.empty()) label = "download";
+    return label;
+}
+
+void notifyTransfer(const ProgressCtx& ctx, TransferPhase phase,
+                    uint64_t current, uint64_t total) {
+    if (!ctx.observer) return;
+    TransferEvent ev;
+    ev.label = ctx.label;
+    ev.current = current;
+    ev.total = total;
+    ev.phase = phase;
+    ctx.observer(ev);
+}
 
 int progressCallback(void* clientp,
                      curl_off_t dltotal,
@@ -62,13 +83,13 @@ int progressCallback(void* clientp,
                      curl_off_t /*ultotal*/,
                      curl_off_t /*ulnow*/) {
     auto* ctx = static_cast<ProgressCtx*>(clientp);
-    if (!ctx || !ctx->progress) return 0;
-    if (dltotal > 0) {
-        ctx->progress(static_cast<uint64_t>(dlnow),
-                      static_cast<uint64_t>(dltotal));
-    } else {
-        ctx->progress(static_cast<uint64_t>(dlnow), 0);
-    }
+    if (!ctx) return 0;
+    const uint64_t total = dltotal > 0 ? static_cast<uint64_t>(dltotal) : 0;
+    if (total > 0) ctx->total = total;
+    if (ctx->progress) ctx->progress(static_cast<uint64_t>(dlnow), total);
+    notifyTransfer(*ctx, TransferPhase::Progress,
+                   static_cast<uint64_t>(dlnow),
+                   total ? total : ctx->total);
     return 0;
 }
 
@@ -189,12 +210,13 @@ Result<std::string> RegistryClient::httpGet(const std::string& url,
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "hpm/0.1.0");
 
-    ProgressCtx ctx{progress};
-    if (progress) {
+    ProgressCtx ctx{progress, config_.transferObserver, transferLabel(url), 0};
+    if (progress || config_.transferObserver) {
         curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progressCallback);
         curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &ctx);
         curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     }
+    notifyTransfer(ctx, TransferPhase::Begin, 0, 0);
 
     CURLcode res = curl_easy_perform(curl);
     long httpCode = 0;
@@ -202,13 +224,16 @@ Result<std::string> RegistryClient::httpGet(const std::string& url,
     curl_easy_cleanup(curl);
 
     if (res != CURLE_OK) {
+        notifyTransfer(ctx, TransferPhase::Fail, 0, ctx.total);
         return Error(ErrorCode::NetworkError,
                      "HTTP 失败: " + std::string(curl_easy_strerror(res)));
     }
     if (!isFile && httpCode != 200) {
+        notifyTransfer(ctx, TransferPhase::Fail, 0, ctx.total);
         return Error(ErrorCode::NetworkError,
                      "HTTP " + std::to_string(httpCode) + ": " + url);
     }
+    notifyTransfer(ctx, TransferPhase::Done, out.size(), out.size());
     return out;
 }
 
@@ -239,12 +264,13 @@ Result<void> RegistryClient::httpDownload(
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "hpm/0.1.0");
 
-    ProgressCtx ctx{progress};
-    if (progress) {
+    ProgressCtx ctx{progress, config_.transferObserver, transferLabel(url), 0};
+    if (progress || config_.transferObserver) {
         curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progressCallback);
         curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &ctx);
         curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     }
+    notifyTransfer(ctx, TransferPhase::Begin, 0, 0);
 
     CURLcode res = curl_easy_perform(curl);
     long httpCode = 0;
@@ -253,16 +279,19 @@ Result<void> RegistryClient::httpDownload(
     f.close();
 
     if (res != CURLE_OK) {
+        notifyTransfer(ctx, TransferPhase::Fail, 0, ctx.total);
         std::filesystem::remove(dest);
         return Error(ErrorCode::NetworkError,
                      "下载失败: " + std::string(curl_easy_strerror(res)) +
                      " URL: " + url);
     }
     if (!isFile && httpCode != 200) {
+        notifyTransfer(ctx, TransferPhase::Fail, 0, ctx.total);
         std::filesystem::remove(dest);
         return Error(ErrorCode::NetworkError,
                      "HTTP " + std::to_string(httpCode) + ": " + url);
     }
+    notifyTransfer(ctx, TransferPhase::Done, ctx.total, ctx.total);
     return {};
 }
 
@@ -498,7 +527,7 @@ Result<Index> RegistryClient::fetchIndex(DownloadProgress progress) {
 
     std::filesystem::path officialCertPath;
     if (!config_.skipSignature) {
-        OfficialCertManager certMgr(config_.cacheDir);
+        OfficialCertManager certMgr(config_.cacheDir, config_.transferObserver);
         auto certPath = certMgr.ensure();
         if (!certPath) {
             return Error(ErrorCode::PermissionDenied,

@@ -20,6 +20,7 @@
 #include <hpm/registry/certificate.h>
 #include <hpm/registry/index.h>
 #include <hpm/registry/revoke.h>
+#include <hpm/registry/transfer.h>
 #include <hpm/result.h>
 
 #include <filesystem>
@@ -35,11 +36,13 @@ struct RegistryConfig {
     std::filesystem::path    cacheDir;
     bool                     offline = false;
     bool                     skipSignature = false;
+    TransferObserver         transferObserver;
 
     static RegistryConfig load();
 };
 
 using DownloadProgress = std::function<void(uint64_t downloaded, uint64_t total)>;
+
 
 class RegistryClient {
 public:
