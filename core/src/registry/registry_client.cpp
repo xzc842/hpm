@@ -272,7 +272,8 @@ Result<void> RegistryClient::httpDownload(
 
 Result<RevocationList> RegistryClient::loadRevocation(
     const std::string& baseUrl,
-    const std::filesystem::path& certPath) {
+    const std::filesystem::path& certPath,
+    const std::string& stateKey) {
 
     if (config_.offline) {
         std::cerr << "warning: 您处于离线模式，无法获取安全更新\n";
@@ -339,9 +340,53 @@ Result<RevocationList> RegistryClient::loadRevocation(
                      "吊销列表已超过 7 天有效期: " + url);
     }
 
+    auto rolled = checkRevokeRollback(stateKey, parsed->updatedAt);
+    if (!rolled) {
+        fs::remove(tmpJson);
+        fs::remove(tmpSig);
+        return rolled.error();
+    }
+
     fs::remove(tmpJson);
     fs::remove(tmpSig);
     return *parsed;
+}
+
+void RegistryClient::loadRevokeState() {
+    if (revokeStateLoaded_) return;
+    revokeStateLoaded_ = true;
+    const fs::path path = config_.cacheDir / "cache" / "revocation-state.json";
+    auto j = json::parseFile(path);
+    if (!j || !j->isObject()) return;
+    auto keys = j->keys();
+    if (!keys) return;
+    for (const auto& key : *keys) {
+        const std::string value = j->getString(key);
+        if (!value.empty()) revokeState_[key] = value;
+    }
+}
+
+Result<void> RegistryClient::checkRevokeRollback(
+    const std::string& stateKey, const std::string& updatedAt) {
+    loadRevokeState();
+    auto it = revokeState_.find(stateKey);
+    if (it != revokeState_.end() && updatedAt < it->second) {
+        return Error(ErrorCode::ChecksumMismatch,
+                     "检测到吊销列表回滚: " + stateKey + " (" + updatedAt +
+                         " < " + it->second + ")");
+    }
+    if (it == revokeState_.end() || updatedAt > it->second) {
+        revokeState_[stateKey] = updatedAt;
+        json::Value root = json::Value::object();
+        for (const auto& [key, value] : revokeState_) {
+            root.set(key, json::Value(value));
+        }
+        const fs::path path =
+            config_.cacheDir / "cache" / "revocation-state.json";
+        auto written = json::writeFile(root, path);
+        if (!written) return written.error();
+    }
+    return {};
 }
 
 Result<RevocationList> RegistryClient::loadRootRevocation() {
@@ -417,6 +462,13 @@ Result<RevocationList> RegistryClient::loadRootRevocation() {
         fs::remove(tmpSig);
         return Error(ErrorCode::ChecksumMismatch,
                      "根吊销列表 issuer 不是内置根证书: " + url);
+    }
+
+    auto rolled = checkRevokeRollback("root", parsed->updatedAt);
+    if (!rolled) {
+        fs::remove(tmpJson);
+        fs::remove(tmpSig);
+        return rolled.error();
     }
 
     fs::remove(tmpJson);
@@ -523,7 +575,10 @@ Result<Index> RegistryClient::fetchIndex(DownloadProgress progress) {
         }
 
         if (!config_.skipSignature) {
-            auto rev = loadRevocation(baseUrl, officialCertPath_);
+            auto rev = loadRevocation(
+                baseUrl, officialCertPath_,
+                "official:" + normalizeFingerprint(
+                    certificateFingerprint(officialCert_)));
             if (!rev) {
                 lastError = "吊销列表加载失败: " + rev.error().message();
                 continue;
@@ -623,7 +678,8 @@ Result<const Index*> RegistryClient::fetchDomainIndex(
 
     // 2.5 下载并验证域吊销列表
     auto domainBase = urlDir(info.index);
-    auto domainRev = loadRevocation(domainBase, certPath);
+    auto domainRev = loadRevocation(domainBase, certPath,
+                                    "domain:" + domain);
     if (!domainRev) {
         return Error(ErrorCode::ChecksumMismatch,
                      "域吊销列表加载失败: " +

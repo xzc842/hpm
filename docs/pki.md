@@ -292,3 +292,23 @@ https://raw.githubusercontent.com/AstercoreTeam/hpm-repo/main/ROOT_revoke.json
    `您处于离线模式，无法获取安全更新`，继续使用本地包；此模式下无法执行吊销检查。
 
 7 天有效期只约束吊销列表本身，不改变证书自身的 `notBefore`/`notAfter`。
+
+### 8.1 防回滚
+
+客户端在缓存目录维护：
+
+```text
+cache/revocation-state.json
+```
+
+按吊销列表身份记录已经见过的最大 `updatedAt`：
+
+- 根列表：`root`
+- 官方仓库：`official:<official.crt SHA-256>`
+- 私域仓库：`domain:<domain>`
+
+如果新拉取的签名列表 `updatedAt` 早于已记录值，直接拒绝：
+**不允许用旧签名列表恢复已吊销证书**。
+相同时间允许，较新时间会原子更新记录。
+
+该状态文件只防网络/镜像回放；本地用户删除缓存后可重新引导。

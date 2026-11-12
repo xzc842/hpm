@@ -91,8 +91,12 @@ private:
     // 吊销列表：下载/缓存/验签，TTL 7 天
     Result<RevocationList> loadRevocation(
         const std::string& baseUrl,
-        const std::filesystem::path& certPath);
+        const std::filesystem::path& certPath,
+        const std::string& stateKey);
     Result<RevocationList> loadRootRevocation();
+    void loadRevokeState();
+    Result<void> checkRevokeRollback(const std::string& stateKey,
+                                     const std::string& updatedAt);
     bool isRevoked(const CertificatePtr& cert,
                    const std::string& domain) const;
 
@@ -106,6 +110,8 @@ private:
     bool mainRevokeLoaded_ = false;
     RevocationList rootRevoke_;
     bool rootRevokeLoaded_ = false;
+    std::map<std::string, std::string> revokeState_;
+    bool revokeStateLoaded_ = false;
 
     // 域缓存
     std::map<std::string, Index>                  domainIndexes_;
