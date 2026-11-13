@@ -1,8 +1,9 @@
 # HPM · Hardware Package Manager
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![GitHub](https://img.shields.io/badge/GitHub-xzc842%2Fhpm-181717?logo=github)](https://github.com/xzc842/hpm)
+[![GitHub](https://img.shields.io/badge/GitHub-AstercoreTeam%2Fhpm-181717?logo=github)](https://github.com/AstercoreTeam/hpm)
 [![GitCode](https://img.shields.io/badge/GitCode-xzc842%2Fhpm-C71D23?logo=git)](https://gitcode.com/xzc842/hpm)
+[![AtomGitStars](https://gitcode.com/xzc842/hpm/star/new_badge.svg)](https://gitcode.com/xzc842/hpm)
 
 **硬件包管理器** 用一份清单描述硬件，自动拉取驱动、解析依赖、生成代码、编译烧录。
 ---
