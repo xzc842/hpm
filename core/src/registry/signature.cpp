@@ -111,6 +111,19 @@ Result<bool> verifySignatureWithCert(const std::filesystem::path& certPem,
     return verifyWithKey(key.get(), sigFile, dataFile);
 }
 
+Result<bool> verifySignatureWithPem(const std::string& certPem,
+                                    const std::filesystem::path& sigFile,
+                                    const std::filesystem::path& dataFile) {
+    auto cert = loadCertificatePem(certPem, "signature cert");
+    if (!cert) return cert.error();
+    auto key = certificatePublicKey(*cert);
+    if (!key) {
+        return Error(ErrorCode::InvalidField,
+                     "无法读取 PEM 证书公钥");
+    }
+    return verifyWithKey(key.get(), sigFile, dataFile);
+}
+
 std::string sha256File(const std::filesystem::path& file) {
     std::ifstream f(file, std::ios::binary);
     if (!f) return "";

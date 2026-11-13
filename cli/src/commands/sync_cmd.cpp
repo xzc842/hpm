@@ -17,6 +17,7 @@
 
 #include "../cmd_context.h"
 #include "../output.h"
+#include "download_progress.h"
 
 #include <hpm/capability/capability_checker.h>
 #include <hpm/capability/driver_library.h>
@@ -275,22 +276,20 @@ int SyncCmd::run(CmdContext& ctx) {
         registry::RegistryConfig cfg = registry::RegistryConfig::load();
         if (skipSignature_) cfg.skipSignature = true;
         cfg.cacheDir = ctx.cacheDir();
+        DownloadProgressDisplay progress;
+        cfg.transferObserver = [&](const registry::TransferEvent& ev) {
+            progress.update(ev);
+        };
         clientHolder.emplace(cfg);
         clientPtr = &*clientHolder;
 
         std::optional<registry::Index> mainIdx;
         {
-            auto idxBar = util::ProgressBar("index.json", 0);
-            auto idxResult = clientPtr->fetchIndex(
-                [&](uint64_t downloaded, uint64_t total) {
-                    idxBar.update(downloaded, total);
-                });
+            auto idxResult = clientPtr->fetchIndex();
             if (!idxResult) {
-                idxBar.fail();
                 Output::error(idxResult.error().message());
                 return 1;
             }
-            idxBar.done();
             mainIdx = std::move(*idxResult);
             Output::detail("索引已加载（" + std::to_string(mainIdx->packages.size()) + " 个包，"
                            + std::to_string(mainIdx->domains.size()) + " 个域）");
@@ -304,17 +303,11 @@ int SyncCmd::run(CmdContext& ctx) {
         Output::detail("需要 " + std::to_string(needed->size()) + " 个包");
 
         for (const auto& pkg : *needed) {
-            auto bar = util::ProgressBar(pkg.fullName + "@" + pkg.version, 0);
-            auto pkgPath = clientPtr->ensurePackage(pkg.fullName, pkg.version,
-                [&](uint64_t downloaded, uint64_t total) {
-                    bar.update(downloaded, total);
-                });
+            auto pkgPath = clientPtr->ensurePackage(pkg.fullName, pkg.version);
             if (!pkgPath) {
-                bar.fail();
                 Output::error(pkgPath.error().message());
                 return 1;
             }
-            bar.done();
         }
         Output::success("所有依赖包已就绪");
     } else {

@@ -17,6 +17,7 @@
 
 #include "../cmd_context.h"
 #include "../output.h"
+#include "download_progress.h"
 
 #include <hpm/json/json_io.h>
 #include <hpm/registry/registry_client.h>
@@ -295,6 +296,10 @@ int SearchCmd::run(CmdContext& ctx) {
     registry::RegistryConfig cfg = registry::RegistryConfig::load();
     cfg.cacheDir = ctx.cacheDir();
     cfg.skipSignature = skipSignature_;
+    DownloadProgressDisplay progress;
+    cfg.transferObserver = [&](const registry::TransferEvent& ev) {
+        progress.update(ev);
+    };
 
     registry::RegistryClient client(cfg);
 

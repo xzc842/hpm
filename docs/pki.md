@@ -229,6 +229,30 @@ revoke.json.sig
 
 `revoke.json` 由仓库的 official/域私钥签名，客户端用对应证书验证签名。主仓库和域仓库的吊销列表取并集。
 
+官方仓库和私域仓库的 `revoke.json` **每周更新**，客户端最大接受 7 天有效期。
+
+官方仓库根目录还固定提供根级吊销列表：
+
+```text
+ROOT_revoke.json
+ROOT_revoke.json.sig
+```
+
+`ROOT_revoke.json` 由 HPM Root CA 私钥签名，**每年更新**，客户端最大接受 365 天有效期。
+根吊销列表的 `updatedAt` 还必须不早于 `core/include/hpm/config.h` 中的：
+
+```c
+#define HPM_ROOT_REVOKE_MIN_TIMESTAMP "2026-11-12T00:00:00Z"
+```
+
+默认从固定地址拉取：
+
+```text
+https://raw.githubusercontent.com/AstercoreTeam/hpm-repo/main/ROOT_revoke.json
+```
+
+可用环境变量 `HPM_ROOT_REVOKE` 覆盖地址。
+
 格式：
 
 ```json
@@ -254,6 +278,8 @@ revoke.json.sig
 
 客户端行为：
 
+0. 拉取 `ROOT_revoke.json` + `.sig`，用内置 Root CA 验签；检查 `updatedAt` 的年度有效期和 `HPM_ROOT_REVOKE_MIN_TIMESTAMP`；
+   官方证书命中根吊销列表时直接拒绝；
 1. 下载 `index.json` 同目录的 `revoke.json` 和 `.sig`；
 2. 用验证索引的同一张 official/域证书验签；
 3. **每次加载仓库都重新拉取** `revoke.json` 和 `.sig`，不使用旧缓存跳过检查；
@@ -261,8 +287,28 @@ revoke.json.sig
 5. 签名无效时拒绝该仓库；
 6. 按证书序列号或证书 SHA-256 匹配；
 7. 先验证证书链和 SAN，再查吊销，再验证包签名；
-8. **`updatedAt` 超过 7 天的列表视为过期，拒绝加载该仓库**；
+8. **`updatedAt` 超过 7 天的官方/私域列表视为过期，拒绝加载该仓库；根列表超过 365 天或早于限制时间也拒绝**；
 9. 离线模式下无法拉取吊销列表，但**不拒绝加载**：打印警告
    `您处于离线模式，无法获取安全更新`，继续使用本地包；此模式下无法执行吊销检查。
 
 7 天有效期只约束吊销列表本身，不改变证书自身的 `notBefore`/`notAfter`。
+
+### 8.1 防回滚
+
+客户端在缓存目录维护：
+
+```text
+cache/revocation-state.json
+```
+
+按吊销列表身份记录已经见过的最大 `updatedAt`：
+
+- 根列表：`root`
+- 官方仓库：`official:<official.crt SHA-256>`
+- 私域仓库：`domain:<domain>`
+
+如果新拉取的签名列表 `updatedAt` 早于已记录值，直接拒绝：
+**不允许用旧签名列表恢复已吊销证书**。
+相同时间允许，较新时间会原子更新记录。
+
+该状态文件只防网络/镜像回放；本地用户删除缓存后可重新引导。

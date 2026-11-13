@@ -37,7 +37,7 @@
 extern "C" {
 #endif
 
-#define HPM_DEBUG_ABI_VERSION 3
+#define HPM_DEBUG_ABI_VERSION 4
 
 typedef struct {
     const char* key;
@@ -77,7 +77,8 @@ typedef struct {
     uint32_t value;
     uint32_t function;
     uint32_t direction;
-    uint32_t changed;     /* 1=value, 2=function, 4=direction */
+    uint32_t changed;     /* 1=value, 2=function, 4=direction, 8=pulse_width */
+    uint32_t pulse_width; /* changed bit3 置位时有效：上一电平持续虚拟周期 */
 } HpmDebugPinEvent;
 
 typedef struct {
@@ -176,6 +177,12 @@ typedef struct HpmDebugHostApi {
     int (*pulse_pin)(void* host, const char* pin,
                      uint32_t active_value, uint32_t idle_value,
                      uint64_t width_ns);
+
+    /* 向任意 GPIO 注入一个指定虚拟周期宽度的脉冲。
+     * 由 mcus 的 PulseWidth 总线事件实现，不暂停 CPU。
+     * width_cycles 为虚拟周期数，level!=0 表示高脉冲。 */
+    int (*inject_pulse)(void* host, const char* pin,
+                        uint32_t width_cycles, uint32_t level);
 } HpmDebugHostApi;
 
 uint32_t hpm_debug_abi_version(void);

@@ -20,6 +20,7 @@
 #include <hpm/registry/certificate.h>
 #include <hpm/registry/index.h>
 #include <hpm/registry/revoke.h>
+#include <hpm/registry/transfer.h>
 #include <hpm/result.h>
 
 #include <filesystem>
@@ -35,11 +36,13 @@ struct RegistryConfig {
     std::filesystem::path    cacheDir;
     bool                     offline = false;
     bool                     skipSignature = false;
+    TransferObserver         transferObserver;
 
     static RegistryConfig load();
 };
 
 using DownloadProgress = std::function<void(uint64_t downloaded, uint64_t total)>;
+
 
 class RegistryClient {
 public:
@@ -91,7 +94,12 @@ private:
     // 吊销列表：下载/缓存/验签，TTL 7 天
     Result<RevocationList> loadRevocation(
         const std::string& baseUrl,
-        const std::filesystem::path& certPath);
+        const std::filesystem::path& certPath,
+        const std::string& stateKey);
+    Result<RevocationList> loadRootRevocation();
+    void loadRevokeState();
+    Result<void> checkRevokeRollback(const std::string& stateKey,
+                                     const std::string& updatedAt);
     bool isRevoked(const CertificatePtr& cert,
                    const std::string& domain) const;
 
@@ -103,6 +111,10 @@ private:
     std::filesystem::path officialCertPath_;
     RevocationList mainRevoke_;
     bool mainRevokeLoaded_ = false;
+    RevocationList rootRevoke_;
+    bool rootRevokeLoaded_ = false;
+    std::map<std::string, std::string> revokeState_;
+    bool revokeStateLoaded_ = false;
 
     // 域缓存
     std::map<std::string, Index>                  domainIndexes_;

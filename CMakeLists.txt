@@ -21,6 +21,12 @@ project(hpm
     LANGUAGES CXX
 )
 
+# 默认安装到用户目录，避免依赖系统级 /usr/local 写权限。
+if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+    set(CMAKE_INSTALL_PREFIX "$ENV{HOME}/.local"
+        CACHE PATH "Install prefix" FORCE)
+endif()
+
 # ---------- 全局设置 ----------
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

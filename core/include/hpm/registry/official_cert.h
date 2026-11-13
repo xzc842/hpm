@@ -16,6 +16,7 @@
 #pragma once
 
 #include <hpm/registry/certificate.h>
+#include <hpm/registry/transfer.h>
 #include <hpm/result.h>
 
 #include <filesystem>
@@ -28,7 +29,8 @@ namespace hpm::registry {
 // - 只有通过根证书验证的官方证书才会被使用。
 class OfficialCertManager {
 public:
-    explicit OfficialCertManager(std::filesystem::path cacheDir);
+    explicit OfficialCertManager(std::filesystem::path cacheDir,
+                                 TransferObserver observer = {});
 
     Result<std::filesystem::path> ensure();
 
@@ -42,6 +44,7 @@ private:
     Result<CertificatePtr> loadRoot() const;
 
     std::filesystem::path cacheDir_;
+    TransferObserver observer_;
 };
 
 } // namespace hpm::registry

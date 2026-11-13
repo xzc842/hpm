@@ -38,6 +38,17 @@ OL5NFoAb12sRoQmdCgGrPIxf9iVQZlxL7uBFOvL5LF46jREA
 #define HPM_OFFICIAL_CERT_URL \
     "https://raw.githubusercontent.com/AstercoreTeam/hpm-repo/main/official.crt"
 
+// ── 吊销列表 ──
+// 仓库级 revoke.json（官方仓库/私域仓库）每周更新，最大有效期 7 天。
+#define HPM_REVOKE_MAX_AGE_DAYS 7
+// 根级 ROOT_revoke.json 每年更新，最大有效期 365 天。
+#define HPM_ROOT_REVOKE_MAX_AGE_DAYS 365
+// 根吊销列表的 updatedAt 必须不早于该时间；每年轮换根吊销列表时更新。
+#define HPM_ROOT_REVOKE_MIN_TIMESTAMP "2026-11-12T00:00:00Z"
+#define HPM_ROOT_REVOKE_URL \
+    "https://raw.githubusercontent.com/AstercoreTeam/hpm-repo/main/ROOT_revoke.json"
+#define HPM_ENV_ROOT_REVOKE       "HPM_ROOT_REVOKE"
+
 // ── 默认 Registry ──
 // 默认索引地址
 #define HPM_DEFAULT_REGISTRY_URL \

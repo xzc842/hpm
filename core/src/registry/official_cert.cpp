@@ -34,6 +34,27 @@ size_t writeToFile(void* ptr, size_t size, size_t nmemb, void* userdata) {
     return size * nmemb;
 }
 
+struct CertProgressCtx {
+    TransferObserver observer;
+    std::string label;
+    uint64_t total = 0;
+};
+
+int certProgress(void* clientp, curl_off_t dltotal, curl_off_t dlnow,
+                 curl_off_t, curl_off_t) {
+    auto* ctx = static_cast<CertProgressCtx*>(clientp);
+    if (!ctx || !ctx->observer) return 0;
+    const uint64_t total = dltotal > 0 ? static_cast<uint64_t>(dltotal) : 0;
+    if (total > 0) ctx->total = total;
+    TransferEvent ev;
+    ev.label = ctx->label;
+    ev.current = static_cast<uint64_t>(dlnow);
+    ev.total = total ? total : ctx->total;
+    ev.phase = TransferPhase::Progress;
+    ctx->observer(ev);
+    return 0;
+}
+
 } // namespace
 
 const char* OfficialCertManager::officialUrl() {
@@ -43,8 +64,9 @@ const char* OfficialCertManager::officialUrl() {
     return HPM_OFFICIAL_CERT_URL;
 }
 
-OfficialCertManager::OfficialCertManager(std::filesystem::path cacheDir)
-    : cacheDir_(std::move(cacheDir)) {
+OfficialCertManager::OfficialCertManager(std::filesystem::path cacheDir,
+                                         TransferObserver observer)
+    : cacheDir_(std::move(cacheDir)), observer_(std::move(observer)) {
     curl_global_init(CURL_GLOBAL_DEFAULT);
 }
 
@@ -134,6 +156,17 @@ Result<void> OfficialCertManager::download(
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, HPM_HTTP_TIMEOUT);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, HPM_USER_AGENT);
+
+    CertProgressCtx progress{observer_, "official.crt", 0};
+    if (observer_) {
+        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, certProgress);
+        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &progress);
+        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+        TransferEvent begin;
+        begin.label = "official.crt";
+        begin.phase = TransferPhase::Begin;
+        observer_(begin);
+    }
 
     CURLcode res = curl_easy_perform(curl);
     long httpCode = 0;

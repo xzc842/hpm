@@ -46,6 +46,7 @@ private:
     bool jsonMode_ = false;
     bool runImmediately_ = false;
     bool allowMissing_ = false;
+    bool useJit_ = false;
 };
 
 } // namespace hpm::cli

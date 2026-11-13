@@ -54,7 +54,28 @@ size_t writeToFile(void* ptr, size_t size, size_t nmemb, void* userdata) {
 
 struct ProgressCtx {
     DownloadProgress progress;
+    TransferObserver observer;
+    std::string label;
+    uint64_t total = 0;
 };
+
+std::string transferLabel(const std::string& url) {
+    auto slash = url.find_last_of('/');
+    std::string label = slash == std::string::npos ? url : url.substr(slash + 1);
+    if (label.empty()) label = "download";
+    return label;
+}
+
+void notifyTransfer(const ProgressCtx& ctx, TransferPhase phase,
+                    uint64_t current, uint64_t total) {
+    if (!ctx.observer) return;
+    TransferEvent ev;
+    ev.label = ctx.label;
+    ev.current = current;
+    ev.total = total;
+    ev.phase = phase;
+    ctx.observer(ev);
+}
 
 int progressCallback(void* clientp,
                      curl_off_t dltotal,
@@ -62,13 +83,13 @@ int progressCallback(void* clientp,
                      curl_off_t /*ultotal*/,
                      curl_off_t /*ulnow*/) {
     auto* ctx = static_cast<ProgressCtx*>(clientp);
-    if (!ctx || !ctx->progress) return 0;
-    if (dltotal > 0) {
-        ctx->progress(static_cast<uint64_t>(dlnow),
-                      static_cast<uint64_t>(dltotal));
-    } else {
-        ctx->progress(static_cast<uint64_t>(dlnow), 0);
-    }
+    if (!ctx) return 0;
+    const uint64_t total = dltotal > 0 ? static_cast<uint64_t>(dltotal) : 0;
+    if (total > 0) ctx->total = total;
+    if (ctx->progress) ctx->progress(static_cast<uint64_t>(dlnow), total);
+    notifyTransfer(*ctx, TransferPhase::Progress,
+                   static_cast<uint64_t>(dlnow),
+                   total ? total : ctx->total);
     return 0;
 }
 
@@ -189,12 +210,13 @@ Result<std::string> RegistryClient::httpGet(const std::string& url,
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "hpm/0.1.0");
 
-    ProgressCtx ctx{progress};
-    if (progress) {
+    ProgressCtx ctx{progress, config_.transferObserver, transferLabel(url), 0};
+    if (progress || config_.transferObserver) {
         curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progressCallback);
         curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &ctx);
         curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     }
+    notifyTransfer(ctx, TransferPhase::Begin, 0, 0);
 
     CURLcode res = curl_easy_perform(curl);
     long httpCode = 0;
@@ -202,13 +224,16 @@ Result<std::string> RegistryClient::httpGet(const std::string& url,
     curl_easy_cleanup(curl);
 
     if (res != CURLE_OK) {
+        notifyTransfer(ctx, TransferPhase::Fail, 0, ctx.total);
         return Error(ErrorCode::NetworkError,
                      "HTTP 失败: " + std::string(curl_easy_strerror(res)));
     }
     if (!isFile && httpCode != 200) {
+        notifyTransfer(ctx, TransferPhase::Fail, 0, ctx.total);
         return Error(ErrorCode::NetworkError,
                      "HTTP " + std::to_string(httpCode) + ": " + url);
     }
+    notifyTransfer(ctx, TransferPhase::Done, out.size(), out.size());
     return out;
 }
 
@@ -239,12 +264,13 @@ Result<void> RegistryClient::httpDownload(
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "hpm/0.1.0");
 
-    ProgressCtx ctx{progress};
-    if (progress) {
+    ProgressCtx ctx{progress, config_.transferObserver, transferLabel(url), 0};
+    if (progress || config_.transferObserver) {
         curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progressCallback);
         curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &ctx);
         curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     }
+    notifyTransfer(ctx, TransferPhase::Begin, 0, 0);
 
     CURLcode res = curl_easy_perform(curl);
     long httpCode = 0;
@@ -253,16 +279,19 @@ Result<void> RegistryClient::httpDownload(
     f.close();
 
     if (res != CURLE_OK) {
+        notifyTransfer(ctx, TransferPhase::Fail, 0, ctx.total);
         std::filesystem::remove(dest);
         return Error(ErrorCode::NetworkError,
                      "下载失败: " + std::string(curl_easy_strerror(res)) +
                      " URL: " + url);
     }
     if (!isFile && httpCode != 200) {
+        notifyTransfer(ctx, TransferPhase::Fail, 0, ctx.total);
         std::filesystem::remove(dest);
         return Error(ErrorCode::NetworkError,
                      "HTTP " + std::to_string(httpCode) + ": " + url);
     }
+    notifyTransfer(ctx, TransferPhase::Done, ctx.total, ctx.total);
     return {};
 }
 
@@ -272,7 +301,8 @@ Result<void> RegistryClient::httpDownload(
 
 Result<RevocationList> RegistryClient::loadRevocation(
     const std::string& baseUrl,
-    const std::filesystem::path& certPath) {
+    const std::filesystem::path& certPath,
+    const std::string& stateKey) {
 
     if (config_.offline) {
         std::cerr << "warning: 您处于离线模式，无法获取安全更新\n";
@@ -332,11 +362,142 @@ Result<RevocationList> RegistryClient::loadRevocation(
         fs::remove(tmpSig);
         return parsed.error();
     }
-    if (!parsed->fresh(7)) {
+    if (!parsed->fresh(HPM_REVOKE_MAX_AGE_DAYS)) {
         fs::remove(tmpJson);
         fs::remove(tmpSig);
         return Error(ErrorCode::ChecksumMismatch,
                      "吊销列表已超过 7 天有效期: " + url);
+    }
+
+    auto rolled = checkRevokeRollback(stateKey, parsed->updatedAt);
+    if (!rolled) {
+        fs::remove(tmpJson);
+        fs::remove(tmpSig);
+        return rolled.error();
+    }
+
+    fs::remove(tmpJson);
+    fs::remove(tmpSig);
+    return *parsed;
+}
+
+void RegistryClient::loadRevokeState() {
+    if (revokeStateLoaded_) return;
+    revokeStateLoaded_ = true;
+    const fs::path path = config_.cacheDir / "cache" / "revocation-state.json";
+    auto j = json::parseFile(path);
+    if (!j || !j->isObject()) return;
+    auto keys = j->keys();
+    if (!keys) return;
+    for (const auto& key : *keys) {
+        const std::string value = j->getString(key);
+        if (!value.empty()) revokeState_[key] = value;
+    }
+}
+
+Result<void> RegistryClient::checkRevokeRollback(
+    const std::string& stateKey, const std::string& updatedAt) {
+    loadRevokeState();
+    auto it = revokeState_.find(stateKey);
+    if (it != revokeState_.end() && updatedAt < it->second) {
+        return Error(ErrorCode::ChecksumMismatch,
+                     "检测到吊销列表回滚: " + stateKey + " (" + updatedAt +
+                         " < " + it->second + ")");
+    }
+    if (it == revokeState_.end() || updatedAt > it->second) {
+        revokeState_[stateKey] = updatedAt;
+        json::Value root = json::Value::object();
+        for (const auto& [key, value] : revokeState_) {
+            root.set(key, json::Value(value));
+        }
+        const fs::path path =
+            config_.cacheDir / "cache" / "revocation-state.json";
+        auto written = json::writeFile(root, path);
+        if (!written) return written.error();
+    }
+    return {};
+}
+
+Result<RevocationList> RegistryClient::loadRootRevocation() {
+    if (config_.offline) {
+        std::cerr << "warning: 您处于离线模式，无法获取根吊销列表\n";
+        return RevocationList{};
+    }
+
+    const char* env = std::getenv(HPM_ENV_ROOT_REVOKE);
+    const std::string url =
+        (env && *env) ? std::string(env) : std::string(HPM_ROOT_REVOKE_URL);
+    auto text = httpGet(url);
+    if (!text) {
+        return Error(ErrorCode::NetworkError,
+                     "根吊销列表拉取失败: " + text.error().message());
+    }
+    auto sigText = httpGet(url + ".sig");
+    if (!sigText) {
+        return Error(ErrorCode::NetworkError,
+                     "根吊销列表签名拉取失败: " +
+                         sigText.error().message());
+    }
+
+    const fs::path tmpDir = config_.cacheDir / "cache" / "tmp";
+    std::error_code ec;
+    fs::create_directories(tmpDir, ec);
+    const fs::path tmpJson = tmpDir / "ROOT_revoke.json.tmp";
+    const fs::path tmpSig = tmpDir / "ROOT_revoke.json.sig.tmp";
+    {
+        std::ofstream f(tmpJson);
+        if (!f) return Error(ErrorCode::IoError, "无法写根吊销列表临时文件");
+        f << *text;
+    }
+    {
+        std::ofstream f(tmpSig);
+        if (!f) return Error(ErrorCode::IoError, "无法写根吊销签名临时文件");
+        f << *sigText;
+    }
+
+    auto ok = verifySignatureWithPem(HPM_ROOT_CA_PEM, tmpSig, tmpJson);
+    if (!ok || !*ok) {
+        fs::remove(tmpJson);
+        fs::remove(tmpSig);
+        if (!ok) return ok.error();
+        return Error(ErrorCode::ChecksumMismatch,
+                     "根吊销列表签名无效: " + url);
+    }
+
+    auto parsed = parseRevocation(*text);
+    if (!parsed) {
+        fs::remove(tmpJson);
+        fs::remove(tmpSig);
+        return parsed.error();
+    }
+    if (!parsed->freshSince(HPM_ROOT_REVOKE_MAX_AGE_DAYS,
+                            HPM_ROOT_REVOKE_MIN_TIMESTAMP)) {
+        fs::remove(tmpJson);
+        fs::remove(tmpSig);
+        return Error(ErrorCode::ChecksumMismatch,
+                     "根吊销列表已过期或早于限制时间: " + url);
+    }
+
+    auto root = loadCertificatePem(HPM_ROOT_CA_PEM, "HPM_ROOT_CA_PEM");
+    if (!root) {
+        fs::remove(tmpJson);
+        fs::remove(tmpSig);
+        return root.error();
+    }
+    if (!parsed->issuerFingerprint.empty() &&
+        normalizeFingerprint(parsed->issuerFingerprint) !=
+            normalizeFingerprint(certificateFingerprint(*root))) {
+        fs::remove(tmpJson);
+        fs::remove(tmpSig);
+        return Error(ErrorCode::ChecksumMismatch,
+                     "根吊销列表 issuer 不是内置根证书: " + url);
+    }
+
+    auto rolled = checkRevokeRollback("root", parsed->updatedAt);
+    if (!rolled) {
+        fs::remove(tmpJson);
+        fs::remove(tmpSig);
+        return rolled.error();
     }
 
     fs::remove(tmpJson);
@@ -366,7 +527,7 @@ Result<Index> RegistryClient::fetchIndex(DownloadProgress progress) {
 
     std::filesystem::path officialCertPath;
     if (!config_.skipSignature) {
-        OfficialCertManager certMgr(config_.cacheDir);
+        OfficialCertManager certMgr(config_.cacheDir, config_.transferObserver);
         auto certPath = certMgr.ensure();
         if (!certPath) {
             return Error(ErrorCode::PermissionDenied,
@@ -377,6 +538,21 @@ Result<Index> RegistryClient::fetchIndex(DownloadProgress progress) {
         officialCert_ = *cert;
         officialCertPath = *certPath;
         officialCertPath_ = *certPath;
+    }
+
+    if (!config_.skipSignature) {
+        auto rootRev = loadRootRevocation();
+        if (!rootRev) {
+            return Error(ErrorCode::PermissionDenied,
+                         "根吊销列表加载失败: " +
+                             rootRev.error().message());
+        }
+        if (rootRev->contains(officialCert_)) {
+            return Error(ErrorCode::PermissionDenied,
+                         "官方证书已被根吊销列表吊销");
+        }
+        rootRevoke_ = std::move(*rootRev);
+        rootRevokeLoaded_ = true;
     }
 
     std::string lastError;
@@ -428,7 +604,10 @@ Result<Index> RegistryClient::fetchIndex(DownloadProgress progress) {
         }
 
         if (!config_.skipSignature) {
-            auto rev = loadRevocation(baseUrl, officialCertPath_);
+            auto rev = loadRevocation(
+                baseUrl, officialCertPath_,
+                "official:" + normalizeFingerprint(
+                    certificateFingerprint(officialCert_)));
             if (!rev) {
                 lastError = "吊销列表加载失败: " + rev.error().message();
                 continue;
@@ -528,7 +707,8 @@ Result<const Index*> RegistryClient::fetchDomainIndex(
 
     // 2.5 下载并验证域吊销列表
     auto domainBase = urlDir(info.index);
-    auto domainRev = loadRevocation(domainBase, certPath);
+    auto domainRev = loadRevocation(domainBase, certPath,
+                                    "domain:" + domain);
     if (!domainRev) {
         return Error(ErrorCode::ChecksumMismatch,
                      "域吊销列表加载失败: " +

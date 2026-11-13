@@ -7,7 +7,7 @@
         "osc_hz": "11059200",
         "timer_id": "1"
       },
-      "driver": "time",
+      "driver": "time-stc90c51",
       "version": "1.0.0"
     },
     "servo": {
@@ -16,7 +16,7 @@
         "freq_hz": "50",
         "osc_hz": "11059200"
       },
-      "driver": "pwm",
+      "driver": "pwm-stc90c51",
       "pin": "P1_0",
       "version": "1.0.0"
     }

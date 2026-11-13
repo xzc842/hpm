@@ -31,6 +31,9 @@ TEST_CASE("revoke: parse and 7 day validity", "[revoke]") {
     CHECK(parsed->entries.size() == 1);
     CHECK(parsed->fresh(7));
     CHECK_FALSE(parsed->fresh(0));
+    CHECK(parsed->freshSince(365, "2026-11-07T06:16:37Z"));
+    CHECK_FALSE(parsed->freshSince(365, "2026-11-08T00:00:00Z"));
+    CHECK(parsed->freshSince(365, ""));
 
     RevocationList old;
     old.updatedAt = "2020-01-01T00:00:00Z";

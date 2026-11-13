@@ -416,6 +416,9 @@ struct Host::Impl {
             sim->insert_or_assign("stream_name", streamName);
             sim->insert_or_assign("start_paused", true);
             sim->insert_or_assign("stay_alive", true);
+            if (!opts.jitPath.empty()) {
+                sim->insert_or_assign("jit", opts.jitPath.string());
+            }
 
             sessionConfig =
                 fs::absolute(opts.buildDir / "hpm-debug" / "session.toml")
@@ -761,6 +764,7 @@ struct Host::Impl {
             ctx->api.bus_send = &Impl::hostBusSend;
             ctx->api.usb_send = &Impl::hostUsbSend;
             ctx->api.pulse_pin = &Impl::hostPulsePin;
+            ctx->api.inject_pulse = &Impl::hostInjectPulse;
 
             devices.push_back(std::move(ctx));
         }
@@ -873,6 +877,14 @@ struct Host::Impl {
                                    active, idle, width_ns);
     }
 
+    static int hostInjectPulse(void* host, const char* pin,
+                               uint32_t width_cycles, uint32_t level) {
+        auto* dev = static_cast<DeviceCtx*>(host);
+        if (!dev || !dev->host) return -1;
+        return dev->host->injectPulse(canonicalPin(readCString(pin)),
+                                      width_cycles, level);
+    }
+
     // ---------- 引脚/注入 ----------
     json::Value pinInfoJson(uint32_t id, uint32_t changed = 0) const {
         auto obj = json::Value::object();
@@ -972,7 +984,7 @@ struct Host::Impl {
         auto* pins = shm->pins();
         const uint32_t idx = it->second;
         const uint32_t old = pins[idx].value.load();
-        pins[idx].value.store(value);
+        shm->set_pin_value(idx, value, true);
         if (old == value) return 0;
 
         HpmDebugPinEvent pe{};
@@ -983,9 +995,10 @@ struct Host::Impl {
         pe.function = pins[idx].function.load();
         pe.direction = pins[idx].direction.load();
         pe.changed = 1;
+        pe.pulse_width = 0;
         if (pinRouter) {
             pinRouter->queue(mcus::PinEvent{
-                idx, value, pe.function, pe.direction, 1});
+                idx, value, pe.function, pe.direction, 1, 0});
         }
         HpmDebugEvent ev{};
         ev.type = HPM_DEBUG_EVENT_PIN;
@@ -998,6 +1011,18 @@ struct Host::Impl {
         return 0;
     }
 
+    int injectPulse(const std::string& canon, uint32_t width_cycles,
+                    uint32_t level) {
+        if (!shm || !busRouter) return -1;
+        const auto it = pinNameToId.find(canon);
+        if (it == pinNameToId.end()) return -1;
+        uint32_t width = width_cycles;
+        uint8_t data[4];
+        std::memcpy(data, &width, sizeof(width));
+        return busRouter->send(it->second, 0, 13, 1, data, 4,
+                               static_cast<uint8_t>(level ? 1 : 0));
+    }
+
     int pulsePin(const std::string& canon, uint32_t active,
                  uint32_t idle, uint64_t width_ns) {
         if (!shm) return -1;
@@ -1005,7 +1030,6 @@ struct Host::Impl {
             readStatus() == static_cast<uint32_t>(mcus::ControlStatus::Running);
 
         if (mcuPause() != 0) return -1;
-
         if (setPin(canon, active) != 0) {
             if (was_running) mcuResume();
             return -1;
@@ -1018,18 +1042,23 @@ struct Host::Impl {
             cycles = static_cast<uint64_t>(raw / 1000000000.0L);
             if (cycles == 0) cycles = 1;
         }
-        const uint64_t cpi = model.cycles_per_instruction > 0
-                                 ? model.cycles_per_instruction
-                                 : 1;
-        uint64_t steps = (cycles + cpi - 1) / cpi;
-        if (steps == 0) steps = 1;
-        if (steps > UINT32_MAX) steps = UINT32_MAX;
-        mcuStep(static_cast<uint32_t>(steps));
 
-        if (setPin(canon, idle) != 0) {
-            if (was_running) mcuResume();
-            return -1;
+        const uint64_t vt0 = readVirtualTime();
+        // 走正常 Resume 路径，而不是调试 Step，Timer0 才会按 cpu_loop 推进。
+        if (mcuResume() != 0) return -1;
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::seconds(2);
+        while (readVirtualTime() - vt0 < cycles &&
+               std::chrono::steady_clock::now() < deadline) {
+            if (readStatus() ==
+                static_cast<uint32_t>(mcus::ControlStatus::Halted)) {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
+
+        if (mcuPause() != 0) return -1;
+        if (setPin(canon, idle) != 0) return -1;
         if (was_running) mcuResume();
         return 0;
     }
@@ -1164,18 +1193,26 @@ struct Host::Impl {
         stopReason = "step";
         stopAddr = 0;
         if (count == 0) count = 1;
-        shm->control()->step_count.store(count);
-        shm->control()->command.store(
+        const uint64_t vt0 = readVirtualTime();
+        auto* ctl = shm->control();
+        // pulsePin 调用前 CPU 已经是 Paused；必须先置 Running，
+        // 否则下面的状态轮询会在 Step 真正执行前立即退出。
+        ctl->status.store(
+            static_cast<uint32_t>(mcus::ControlStatus::Running));
+        ctl->step_count.store(count);
+        ctl->command.store(
             static_cast<uint32_t>(mcus::ControlCommand::Step));
         const auto deadline = std::chrono::steady_clock::now() +
                               std::chrono::seconds(2);
         while (std::chrono::steady_clock::now() < deadline) {
             const uint32_t st = readStatus();
-            if (st == static_cast<uint32_t>(mcus::ControlStatus::Paused) ||
-                st == static_cast<uint32_t>(mcus::ControlStatus::Halted)) {
+            const uint64_t vt = readVirtualTime();
+            if (st == static_cast<uint32_t>(mcus::ControlStatus::Halted)) break;
+            if (st == static_cast<uint32_t>(mcus::ControlStatus::Paused) &&
+                vt != vt0) {
                 break;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         if (readStatus() == static_cast<uint32_t>(mcus::ControlStatus::Halted)) {
             stopReason = "halt";
@@ -1268,11 +1305,13 @@ struct Host::Impl {
                 pe.function = ev.u.pin.function;
                 pe.direction = ev.u.pin.direction;
                 pe.changed = ev.u.pin.changed;
+                pe.pulse_width = ev.u.pin.pulse_width;
 
                 if (pinRouter) {
                     pinRouter->queue(mcus::PinEvent{
                         ev.u.pin.pin_id, ev.u.pin.value, ev.u.pin.function,
-                        ev.u.pin.direction, ev.u.pin.changed});
+                        ev.u.pin.direction, ev.u.pin.changed,
+                        ev.u.pin.pulse_width});
                 }
 
                 HpmDebugEvent out{};

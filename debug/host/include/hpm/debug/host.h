@@ -32,6 +32,7 @@ struct HostOptions {
     std::filesystem::path firmwarePath;
     std::filesystem::path mcusPath;
     std::filesystem::path isaPath;
+    std::filesystem::path jitPath;
 
     bool jsonMode = false;
     bool runImmediately = false;

@@ -1,8 +1,9 @@
 # HPM · Hardware Package Manager
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![GitHub](https://img.shields.io/badge/GitHub-xzc842%2Fhpm-181717?logo=github)](https://github.com/xzc842/hpm)
+[![GitHub](https://img.shields.io/badge/GitHub-AstercoreTeam%2Fhpm-181717?logo=github)](https://github.com/AstercoreTeam/hpm)
 [![GitCode](https://img.shields.io/badge/GitCode-xzc842%2Fhpm-C71D23?logo=git)](https://gitcode.com/xzc842/hpm)
+[![AtomGitStars](https://gitcode.com/xzc842/hpm/star/new_badge.svg)](https://gitcode.com/xzc842/hpm)
 
 **硬件包管理器** 用一份清单描述硬件，自动拉取驱动、解析依赖、生成代码、编译烧录。
 ---
@@ -52,31 +53,38 @@ HPM 的答案：
 需要 CMake 3.20+、C++20 编译器。
 
 ```bash
-git clone --recurse-submodules https://github.com/xzc842/hpm.git
+git clone --recurse-submodules https://github.com/AstercoreTeam/hpm.git
 cd hpm
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DHPM_BUILD_TESTS=OFF
 cmake --build build -j
-sudo cmake --install build --prefix /usr/local
+cmake --install build
 ```
 
-安装内容：
+默认安装到 `$HOME/.local`，无需 sudo：
 
 ```text
-/usr/local/bin/hpm
-/usr/local/bin/hpm-dev
-/usr/local/bin/mcus
-/usr/local/bin/dump_shm
-/usr/local/lib/libmcus_core.so
-/usr/local/lib/libmcus_isa_sdk.a
-/usr/local/include/hpm/debug/plugin.h
-/usr/local/include/mcus/*.h
-/usr/local/src/mcus/model.cpp
-/usr/local/src/mcus/log.cpp
-/usr/local/src/mcus/isa_base.cpp
+~/.local/bin/hpm
+~/.local/bin/hpm-dev
+~/.local/bin/mcus
+~/.local/bin/dump_shm
+~/.local/lib/libmcus_core.so
+~/.local/lib/libmcus_isa_sdk.a
+~/.local/lib/libmcus_jit_8051.so
+~/.local/include/hpm/debug/plugin.h
+~/.local/include/mcus/*.h
+~/.local/src/mcus/model.cpp
+~/.local/src/mcus/log.cpp
+~/.local/src/mcus/isa_base.cpp
 ```
 
-其中 `hpm-dev` 是驱动开发工具，`libmcus_isa_sdk.a`、`/usr/local/include/mcus`
-和 `/usr/local/src/mcus` 用于芯片包 `debug/isa_*.cpp` 的现场编译。
+其中 `hpm-dev` 是驱动开发工具，`libmcus_isa_sdk.a`、`~/.local/include/mcus`
+和 `~/.local/src/mcus` 用于芯片包 `debug/isa_*.cpp` 的现场编译。
+
+如果 `~/.local/bin` 不在 `PATH` 中，需要把它加入：
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
 
 如果克隆时没有带子模块：
 
@@ -174,6 +182,7 @@ hpm flash
 
 ### 5. 在模拟器中运行
 
+您可以使用[hpm-gui]()
 `hpm debug` 会先检查固件是否已编译，然后启动随 HPM 一起构建的 mcus 模拟器。
 模型、ISA 和配置默认自动解析：
 
@@ -183,6 +192,7 @@ hpm debug
 
 - 芯片模型和 ISA 源文件从芯片包的 `debug/` 目录读取；
 - 芯片包 `debug/isa_<arch>.cpp` 会在项目 `build/hpm-debug/isa/` 下现场编译；
+- 使用 `--jit` 时，芯片包 `debug/isa_jit_<arch>.cpp` 会在项目 `build/hpm-debug/jit/` 下现场编译并启用；
 - 配置文件使用项目根目录的 `debug.toml`。
 
 这些路径仍可用 `--model` / `--isa` / `--config` 覆盖。
@@ -195,6 +205,7 @@ hpm debug
 | `--model <json>` | 否 | 芯片包 `debug/*.json` | 覆盖芯片模型 |
 | `--config <toml>` | 否 | 项目 `debug.toml` | 覆盖 mcus 配置 |
 | `--isa <so>` | 否 | 现场编译芯片包 ISA | 覆盖 ISA 动态库 |
+| `--jit` | 否 | 关闭 | 编译并启用芯片包 JIT |
 | `--mcus <bin>` | 否 | `build/bin/mcus` | 模拟器 |
 | `--firmware <file>` | 否 | `build/` 下最新固件 | 覆盖固件 |
 | `--json` | 否 | — | JSON Lines 模式 |
@@ -330,17 +341,18 @@ driver = "<驱动名>"
 - [x] 自研 MCUS 通用架构单片机模拟器：`hpm debug` 支持单片机和设备虚拟化测试
 - [x] hpm-gui：图形化生成 `project.json`
 - [x] KiCad 导入：从原理图生成 `project.json`
+- [x] **虚拟仿真环境**：通过blender插件将虚拟设备添加并绑定到3d场景，在godot模拟器上进行仿真，
 
 ### 进行中
 
 - [ ] **适配Windows**
 - [ ] **toolchain 管理**：自动下载工具链
 - [ ] **AI 驱动包生成**：从文档 + 开源代码整理驱动包
+- [ ] **虚拟仿真环境**：计划通过**[影梦启动器](https://gitcode.com/astercore/YingmengStudio)**生成虚拟环境
 
 ### 计划中
 
-
-- [ ] **虚拟仿真环境**：通过blender插件将虚拟设备添加并绑定到3d场景，在godot模拟器上进行仿真，计划通过**[影梦启动器](https://gitcode.com/astercore/YingmengStudio)**生成虚拟环境（通过插件接入hpm-debug）
+暂无，如果你有好的想法，欢迎提交issue或pr
 
 ---
 

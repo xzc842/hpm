@@ -59,6 +59,23 @@ target_link_libraries(mcus_isa_sdk
 target_compile_options(mcus_isa_sdk PRIVATE -Wall -Wextra -Wpedantic)
 set_target_properties(mcus_isa_sdk PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# JIT：字节码引擎 + x86 翻译器 + 8051 JIT 插件
+add_library(mcus_jit STATIC
+    ${MCUS_SOURCE_DIR}/src/jit.cpp
+    ${MCUS_SOURCE_DIR}/src/jit_x86.cpp
+)
+target_include_directories(mcus_jit PUBLIC ${MCUS_SOURCE_DIR}/include)
+target_link_libraries(mcus_jit PUBLIC mcus_isa_sdk ${CMAKE_DL_LIBS})
+target_compile_options(mcus_jit PRIVATE -Wall -Wextra -Wpedantic)
+set_target_properties(mcus_jit PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+add_library(mcus_jit_8051 SHARED
+    ${MCUS_SOURCE_DIR}/src/isa_jit_8051.cpp
+)
+target_link_libraries(mcus_jit_8051 PRIVATE mcus_isa_sdk)
+target_compile_options(mcus_jit_8051 PRIVATE -Wall -Wextra -Wpedantic)
+set_target_properties(mcus_jit_8051 PROPERTIES INSTALL_RPATH "$ORIGIN")
+
 # 模拟器核心：不含具体 ISA，ISA 由 .so 动态加载
 add_library(mcus_core SHARED
     ${MCUS_SOURCE_DIR}/src/shared_memory.cpp
@@ -78,6 +95,7 @@ target_include_directories(mcus_core
 target_link_libraries(mcus_core
     PUBLIC
         mcus_isa_sdk
+        mcus_jit
         Threads::Threads
         nlohmann_json::nlohmann_json
         toml11::toml11
@@ -119,7 +137,7 @@ add_executable(dump_shm ${MCUS_SOURCE_DIR}/tools/dump_shm.cpp)
 target_link_libraries(dump_shm PRIVATE mcus_core)
 
 # 芯片 ISA 由芯片包 debug/isa_*.cpp 现场编译，不安装内置 ISA。
-install(TARGETS mcus mcus_core mcus_isa_sdk dump_shm
+install(TARGETS mcus mcus_core mcus_isa_sdk mcus_jit_8051 dump_shm
     RUNTIME DESTINATION bin
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib
