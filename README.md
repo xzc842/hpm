@@ -53,7 +53,7 @@ HPM 的答案：
 需要 CMake 3.20+、C++20 编译器。
 
 ```bash
-git clone --recurse-submodules https://github.com/xzc842/hpm.git
+git clone --recurse-submodules https://github.com/AstercoreTeam/hpm.git
 cd hpm
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DHPM_BUILD_TESTS=OFF
 cmake --build build -j
@@ -182,6 +182,7 @@ hpm flash
 
 ### 5. 在模拟器中运行
 
+您可以使用[hpm-gui]()
 `hpm debug` 会先检查固件是否已编译，然后启动随 HPM 一起构建的 mcus 模拟器。
 模型、ISA 和配置默认自动解析：
 
@@ -340,17 +341,18 @@ driver = "<驱动名>"
 - [x] 自研 MCUS 通用架构单片机模拟器：`hpm debug` 支持单片机和设备虚拟化测试
 - [x] hpm-gui：图形化生成 `project.json`
 - [x] KiCad 导入：从原理图生成 `project.json`
+- [x] **虚拟仿真环境**：通过blender插件将虚拟设备添加并绑定到3d场景，在godot模拟器上进行仿真，
 
 ### 进行中
 
 - [ ] **适配Windows**
 - [ ] **toolchain 管理**：自动下载工具链
 - [ ] **AI 驱动包生成**：从文档 + 开源代码整理驱动包
+- [ ] **虚拟仿真环境**：计划通过**[影梦启动器](https://gitcode.com/astercore/YingmengStudio)**生成虚拟环境
 
 ### 计划中
 
-
-- [ ] **虚拟仿真环境**：通过blender插件将虚拟设备添加并绑定到3d场景，在godot模拟器上进行仿真，计划通过**[影梦启动器](https://gitcode.com/astercore/YingmengStudio)**生成虚拟环境（通过插件接入hpm-debug）
+暂无，如果你有好的想法，欢迎提交issue或pr
 
 ---
 

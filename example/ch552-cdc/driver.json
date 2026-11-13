@@ -12,7 +12,7 @@
         "usb_serial": "0001",
         "usb_vid": "0x1209"
       },
-      "driver": "ch552_usb_cdc",
+      "driver": "usb_cdc-ch552g",
       "version": "1.0.0"
     }
   }

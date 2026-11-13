@@ -1,7 +1,7 @@
 mcu = "ch552g"
 
 [devices.serial]
-driver = "ch552_usb_cdc"
+driver = "usb_cdc"
 
 [devices.serial.config]
 usb_vid              = "0x1209"
