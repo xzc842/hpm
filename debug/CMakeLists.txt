@@ -73,7 +73,7 @@ add_library(mcus_jit_8051 SHARED
     ${MCUS_SOURCE_DIR}/src/isa_jit_8051.cpp
 )
 target_link_libraries(mcus_jit_8051 PRIVATE mcus_isa_sdk)
-target_compile_options(mcus_jit_8051 PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_options(mcus_jit_8051 PRIVATE -Wall -Wextra -Wpedantic -Wno-shadow)
 set_target_properties(mcus_jit_8051 PROPERTIES INSTALL_RPATH "$ORIGIN")
 
 # 模拟器核心：不含具体 ISA，ISA 由 .so 动态加载
