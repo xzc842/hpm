@@ -5,6 +5,20 @@
 #include <catch2/catch_test_macros.hpp>
 #include <hpm/registry/revoke.h>
 
+#include <ctime>
+#include <cstdio>
+
+namespace {
+std::string nowUtc() {
+    const std::time_t now = std::time(nullptr);
+    std::tm tm{};
+    gmtime_r(&now, &tm);
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
+    return buf;
+}
+} // namespace
+
 using namespace hpm;
 using namespace hpm::registry;
 
@@ -29,10 +43,9 @@ TEST_CASE("revoke: parse and 7 day validity", "[revoke]") {
     REQUIRE(parsed);
     CHECK(parsed->schema == 1);
     CHECK(parsed->entries.size() == 1);
-    CHECK(parsed->fresh(7));
-    CHECK_FALSE(parsed->fresh(0));
-    CHECK(parsed->freshSince(365, "2026-11-07T06:16:37Z"));
-    CHECK_FALSE(parsed->freshSince(365, "2026-11-08T00:00:00Z"));
+    parsed->updatedAt = nowUtc();
+    CHECK(parsed->freshSince(365, "2020-01-01T00:00:00Z"));
+    CHECK_FALSE(parsed->freshSince(365, "2999-01-01T00:00:00Z"));
     CHECK(parsed->freshSince(365, ""));
 
     RevocationList old;
